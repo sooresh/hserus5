@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>hserus 5</title>
+<style>
+:root{--bg:#071827;--card:#0b2430;--muted:#9fb6c7;--accent:#7be3c7;--danger:#ff9a9a}
+*{box-sizing:border-box}
+body{margin:0;font-family:Inter,system-ui,Arial,Helvetica,sans-serif;background:linear-gradient(#021119,#051521);color:#e6f3f6;padding:14px}
+header{display:flex;flex-wrap:wrap;justify-content:space-between;gap:12px;align-items:center}
+h1{font-size:18px;margin:0}
+.controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+select,button{padding:8px;border-radius:8px;border:1px solid #12333d;background:var(--card);color:inherit}
+button{cursor:pointer}
+#status{font-size:13px;color:var(--muted)}
+main{margin-top:12px}
+.tablewrap{overflow:auto;border:1px solid #0f2b37;border-radius:10px}
+table{width:100%;border-collapse:collapse;font-size:13px;min-width:880px}
+th,td{text-align:left;padding:10px;border-bottom:1px solid rgba(255,255,255,0.06)}
+th{color:var(--muted);font-size:12px;white-space:nowrap}
+tr.match{background:linear-gradient(90deg, rgba(11,36,48,0.6), rgba(6,28,36,0.4))}
+.small{font-size:12px;color:var(--muted)}
+.tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px}
+.tag.above{background:#0f4637;color:#c9ffee}
+.tag.below{background:#462323;color:#ffd7d7}
+.green{color:#7be3c7}
+.red{color:#ff9a9a}
+@media(max-width:720px){ th,td{padding:8px;font-size:12px} h1{font-size:16px} }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>hserus 5</h1>
+    <div class="small">hserus 5</div>
+  </div>
+
+  <div class="controls">
+    <label class="small">Sort:
+      <select id="sortSelect" title="Choose sort column & order">
+        <option value="symbol_asc">Symbol ↑</option>
+        <option value="symbol_desc">Symbol ↓</option>
+
+        <option value="closePct_desc">Close % ↓</option>
+        <option value="closePct_asc">Close % ↑</option>
+
+        <option value="volPct_desc">Vol % ↓</option>
+        <option value="volPct_asc">Vol % ↑</option>
+
+        <option value="shortPct_desc">Short % ↓</option>
+        <option value="shortPct_asc">Short % ↑</option>
+
+        <option value="smaDiff_desc">SMA diff ↓</option>
+        <option value="smaDiff_asc">SMA diff ↑</option>
+
+        <option value="shortPctDelta_desc">Short % vs Prev % ↓</option>
+        <option value="shortPctDelta_asc">Short % vs Prev % ↑</option>
+      </select>
+    </label>
+
+    <button id="refreshBtn">Refresh Data</button>
+    <div id="status">Idle</div>
+  </div>
+</header>
+
+<main>
+  <div class="tablewrap">
+    <table aria-live="polite">
+      <thead>
+        <tr>
+          <th>Symbol</th>
+          <th>Close % (1h)</th>
+          <th>Vol % (vs prev)</th>
+          <th>Short % (vs prev)</th>
+          <th>20‑SMA Position</th>
+          <th>Short % vs Prev %</th>
+        </tr>
+      </thead>
+      <tbody id="resultsBody">
+        <tr><td colspan="6" class="small">Click <strong>Refresh Data</strong> to start scan.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+/* ================== Config ================== */
+const MAX_SYMBOLS = 200;           // universe size
+const KLINES_LIMIT = 30;           // 1h candles to fetch (need >= 20 for SMA)
+const SMA_PERIOD = 20;
+const INTERVAL_1H = '1h';
+const EXCLUDE = [
+  // Rough top-20 market cap exclusions; adjust as you like
+  'BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT','ADAUSDT','DOGEUSDT','TONUSDT','AVAXUSDT','DOTUSDT',
+  'TRXUSDT','SHIBUSDT','LINKUSDT','NEARUSDT','MATICUSDT','LTCUSDT','UNIUSDT','BCHUSDT','ICPUSDT','ETCUSDT'
+];
+const PAUSE_MS = 110;              // small delay to ease rate limits
+
+/* ================== DOM ================== */
+const statusEl = document.getElementById('status');
+const refreshBtn = document.getElementById('refreshBtn');
+const resultsBody = document.getElementById('resultsBody');
+const sortSelect = document.getElementById('sortSelect');
+
+let results = [];
+
+/* ================== Utils ================== */
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+function pctChange(prev, curr) {
+  if (prev === 0 || prev == null || curr == null) return NaN;
+  return ((curr - prev) / prev) * 100;
+}
+function simpleSMA(values, period) {
+  if (!values || values.length < period) return NaN;
+  let sum = 0;
+  for (let i = values.length - period; i < values.length; i++) sum += values[i];
+  return sum / period;
+}
+function fmtPct(x) { return (isNaN(x) ? '—' : x.toFixed(2) + '%'); }
+function tagSMA(diff) { const above = diff >= 0; return `<span class="tag ${above?'above':'below'}">${above?'Above':'Below'}</span>`; }
+
+/* ================== Network ================== */
+async function fetchPerpetualSymbols() {
+  const url = 'https://fapi.binance.com/fapi/v1/exchangeInfo';
+  const r = await fetch(url);
+  if (!r.ok) throw new Error('exchangeInfo failed');
+  const data = await r.json();
+  return data.symbols
+    .filter(s => s.contractType === 'PERPETUAL' && s.symbol.endsWith('USDT') && !EXCLUDE.includes(s.symbol))
+    .map(s => s.symbol);
+}
+
+async function fetchTopUniverse(limit = MAX_SYMBOLS) {
+  // Rank by 24h quoteVolume (activity/liquidity) and abs priceChangePercent as tiebreaker
+  const [tickRes, perp] = await Promise.all([
+    fetch('https://fapi.binance.com/fapi/v1/ticker/24hr'),
+    fetchPerpetualSymbols()
+  ]);
+  if (!tickRes.ok) throw new Error('ticker/24hr failed');
+  const tick = await tickRes.json();
+  return tick
+    .filter(t => t.symbol.endsWith('USDT') && perp.includes(t.symbol))
+    .sort((a,b) => {
+      const qa = parseFloat(a.quoteVolume || 0), qb = parseFloat(b.quoteVolume || 0);
+      if (qb !== qa) return qb - qa; // higher activity first
+      const pa = Math.abs(parseFloat(a.priceChangePercent || 0));
+      const pb = Math.abs(parseFloat(b.priceChangePercent || 0));
+      return pb - pa;
+    })
+    .slice(0, limit)
+    .map(t => t.symbol);
+}
+
+async function fetchKlines1h(symbol) {
+  const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${INTERVAL_1H}&limit=${KLINES_LIMIT}`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`klines failed ${symbol}`);
+  const raw = await r.json();
+  return raw.map(x => ({ open:+x[1], high:+x[2], low:+x[3], close:+x[4], volume:+x[5] })); // oldest -> newest
+}
+
+async function fetchShortAccount1h(symbol, limit=3) {
+  // Need last two values for current %; last three if we want prev %
+  const url = `https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol=${symbol}&period=1h&limit=${limit}`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`shortAccount failed ${symbol}`);
+  const arr = await r.json();
+  return arr.map(o => (o && o.longShortRatio != null) ? parseFloat(o.longShortRatio) : null); // oldest -> newest
+}
+
+/* ================== Sorting ================== */
+function sortResults(list, sortKey) {
+  const [key, dir] = sortKey.split('_');
+  const mul = dir === 'asc' ? 1 : -1;
+  return list.sort((a,b) => {
+    let va = a[key], vb = b[key];
+    if (key === 'symbol') { return mul * a.symbol.localeCompare(b.symbol); }
+    if (isNaN(va) && isNaN(vb)) return 0;
+    if (isNaN(va)) return 1 * mul;
+    if (isNaN(vb)) return -1 * mul;
+    return (va - vb) * mul;
+  });
+}
+
+/* ================== Rendering ================== */
+function appendRow(o) {
+  const tr = document.createElement('tr');
+  tr.className = 'match';
+  tr.innerHTML = `
+    <td><strong>${o.symbol}</strong></td>
+    <td>${fmtPct(o.closePct)}</td>
+    <td>${fmtPct(o.volPct)}</td>
+    <td>${fmtPct(o.shortPct)}</td>
+    <td>${tagSMA(o.smaDiff)}</td>
+    <td>${isNaN(o.shortPctDelta) ? '—' : (o.shortPctDelta > 0 ? '<span class="green">Greater</span>' : (o.shortPctDelta < 0 ? '<span class="red">Less</span>' : 'Equal'))}</td>
+  `;
+  resultsBody.appendChild(tr);
+}
+
+function renderTable() {
+  const sel = sortSelect.value;
+  const sorted = sortResults([...results], sel);
+  resultsBody.innerHTML = '';
+  if (sorted.length === 0) {
+    resultsBody.innerHTML = '<tr><td colspan="6" class="small">No matches found.</td></tr>';
+    return;
+  }
+  for (const r of sorted) appendRow(r);
+}
+
+/* ================== Core Logic ================== */
+function evaluateSymbol(symbol, klines, shortArr) {
+  // klines: oldest -> newest, >= 30
+  const n = klines.length;
+  if (n < 3) return null;
+  const last = klines[n-1], prev = klines[n-2];
+
+  // Cond (1): current volume < previous volume
+  if (!(last.volume < prev.volume)) return null;
+
+  // Candle colour and close% (for display)
+  const closePct = pctChange(prev.close, last.close);
+  const isGreen = last.close > prev.close;
+  const isRed = last.close < prev.close;
+  if (!isGreen && !isRed) return null; // doji
+
+  // SMA20 over last 20 closes (including current)
+  const closes = klines.map(k => k.close);
+  const sma20 = simpleSMA(closes, SMA_PERIOD);
+  const smaDiff = (isNaN(sma20) ? NaN : (last.close - sma20));
+
+  // Require short array
+  if (!shortArr || shortArr.length < 2) return null;
+  const sPrev = shortArr[shortArr.length - 2];
+  const sNow  = shortArr[shortArr.length - 1];
+  if (sPrev == null || sNow == null) return null;
+
+  // Cond (2): direction rule (contrarian to candle colour)
+  if (isRed && !(sNow > sPrev)) return null;
+  if (isGreen && !(sNow < sPrev)) return null;
+
+  // Build metrics
+  const volPct = pctChange(prev.volume, last.volume);
+  const shortPct = pctChange(sPrev, sNow); // current short % chg
+
+  // Need previous short % chg too (for compare), if available
+  let shortPctDelta = NaN;
+  if (shortArr.length >= 3 && shortArr[shortArr.length - 3] != null && sPrev != null) {
+    const sPrevPrev = shortArr[shortArr.length - 3];
+    const shortPctPrev = pctChange(sPrevPrev, sPrev);
+    shortPctDelta = (isNaN(shortPctPrev) || isNaN(shortPct)) ? NaN : (shortPct - shortPctPrev);
+  }
+
+  return {
+    symbol,
+    closePct,
+    volPct,
+    shortPct,
+    smaDiff,
+    shortPctDelta
+  };
+}
+
+async function runScan() {
+  try {
+    results = [];
+    resultsBody.innerHTML = '<tr><td colspan="6" class="small">Preparing scan…</td></tr>';
+    statusEl.textContent = 'Fetching universe…';
+
+    const symbols = await fetchTopUniverse(MAX_SYMBOLS);
+    statusEl.textContent = `Scanning 0 / ${symbols.length}`;
+
+    let i = 0;
+    for (const sym of symbols) {
+      i++;
+      statusEl.textContent = `Scanning ${i} / ${symbols.length}: ${sym}`;
+      try {
+        // Step 1: fetch 1h klines first (cheap) and check volume condition
+        const kl = await fetchKlines1h(sym);
+        if (!kl || kl.length < 3) { await sleep(PAUSE_MS); continue; }
+        const last = kl[kl.length - 1], prev = kl[kl.length - 2];
+        if (!(last.volume < prev.volume)) { await sleep(PAUSE_MS); continue; }
+
+        // Passed precheck → fetch just enough shortAccount data (limit=3 for prev % too)
+        let shortArr = [];
+        try {
+          shortArr = await fetchShortAccount1h(sym, 3);
+        } catch (e) {
+          // skip symbol on fetch error
+          await sleep(PAUSE_MS); continue;
+        }
+        const obj = evaluateSymbol(sym, kl, shortArr);
+        if (obj) { results.push(obj); appendRow(obj); }
+      } catch (e) {
+        // ignore this symbol
+      }
+      await sleep(PAUSE_MS);
+    }
+
+    statusEl.textContent = `Scan complete — ${results.length} matches.`;
+    renderTable();
+  } catch (err) {
+    console.error(err);
+    statusEl.textContent = 'Error: ' + (err.message || err);
+  }
+}
+
+/* ================== Wire-up ================== */
+refreshBtn.addEventListener('click', () => {
+  refreshBtn.disabled = true;
+  resultsBody.innerHTML = '<tr><td colspan="6" class="small">Starting scan…</td></tr>';
+  runScan().finally(() => { refreshBtn.disabled = false; });
+});
+
+sortSelect.addEventListener('change', renderTable);
+
+// auto run on load
+window.addEventListener('load', () => { refreshBtn.click(); });
+</script>
+</body>
+</html>
