@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>hserus5</title>
+  <title>Bollinger Band TA-Style Scanner</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 20px; background: #f4f4f9; }
     h1 { text-align: center; }
@@ -14,7 +14,7 @@
   </style>
 </head>
 <body>
-  <h1>hserus5</h1>
+  <h1>BB TA-Style Crypto Scanner</h1>
   <button onclick="runScanner()">Refresh</button>
   <div id="progress"></div>
   <table id="results">
@@ -27,7 +27,8 @@
         <th onclick="sortTable(4)">CrossBB</th>
         <th onclick="sortTable(5)">3CrsBB</th>
         <th onclick="sortTable(6)">BBDir</th>
-        <th onclick="sortTable(7)">Points</th>
+        <th onclick="sortTable(7)">DistBB%</th>
+        <th onclick="sortTable(8)">Points</th>
       </tr>
     </thead>
     <tbody></tbody>
@@ -82,11 +83,11 @@ function checkConditions(data, symbol) {
   let n = closes.length-1;
 
   let currClose = closes[n], prevClose = closes[n-1];
-  let currVol = vols[n], prevVol = vols[n-1], prevPrevVol = vols[n-2];
+  let currVol = vols[n], prevVol = vols[n-1];
   let currHigh = highs[n], currLow = lows[n];
   let candleGreen = currClose > prevClose;
 
-  let currSMA = sma[n], prevSMA = sma[n-1];
+  let currSMA = sma[n];
   let currUpper = upper[n], prevUpper = upper[n-1];
   let currLower = lower[n], prevLower = lower[n-1];
 
@@ -104,11 +105,19 @@ function checkConditions(data, symbol) {
   let crossBB = (candleGreen ? (currHigh>currUpper?"Yes":"No") : (currLow<currLower?"Yes":"No"));
   let cross3 = "No";
   if (candleGreen) {
-    cross3 = highs.slice(n-3,n).some(h=>h>upper[n]) ? "Yes":"No";
+    cross3 = highs.slice(n-3,n).some(h=>h>currUpper) ? "Yes":"No";
   } else {
-    cross3 = lows.slice(n-3,n).some(l=>l<lower[n]) ? "Yes":"No";
+    cross3 = lows.slice(n-3,n).some(l=>l<currLower) ? "Yes":"No";
   }
   let bbDir = (currUpper>prevUpper && currLower<prevLower) ? "Yes":"No";
+
+  // NEW column: distance from BB
+  let distBB = 0;
+  if (candleGreen) {
+    distBB = ((currUpper - currClose) / currClose * 100).toFixed(2);
+  } else {
+    distBB = ((currClose - currLower) / currClose * 100).toFixed(2);
+  }
 
   // points
   let pts = 0;
@@ -120,7 +129,7 @@ function checkConditions(data, symbol) {
 
   return {
     symbol,
-    closeChg, volChg, prevBB, crossBB, cross3, bbDir, pts
+    closeChg, volChg, prevBB, crossBB, cross3, bbDir, distBB, pts
   };
 }
 
@@ -145,6 +154,7 @@ async function runScanner() {
           <td>${res.crossBB}</td>
           <td>${res.cross3}</td>
           <td>${res.bbDir}</td>
+          <td>${res.distBB}</td>
           <td>${res.pts}</td>
         </tr>`;
         tbody.insertAdjacentHTML("beforeend",row);
@@ -177,4 +187,3 @@ function sortTable(n) {
 </script>
 </body>
 </html>
-
