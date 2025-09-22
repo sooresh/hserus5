@@ -1,322 +1,179 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>hserus 5</title>
-<style>
-:root{--bg:#071827;--card:#0b2430;--muted:#9fb6c7;--accent:#7be3c7;--danger:#ff9a9a}
-*{box-sizing:border-box}
-body{margin:0;font-family:Inter,system-ui,Arial,Helvetica,sans-serif;background:linear-gradient(#021119,#051521);color:#e6f3f6;padding:14px}
-header{display:flex;flex-wrap:wrap;justify-content:space-between;gap:12px;align-items:center}
-h1{font-size:18px;margin:0}
-.controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-select,button{padding:8px;border-radius:8px;border:1px solid #12333d;background:var(--card);color:inherit}
-button{cursor:pointer}
-#status{font-size:13px;color:var(--muted)}
-main{margin-top:12px}
-.tablewrap{overflow:auto;border:1px solid #0f2b37;border-radius:10px}
-table{width:100%;border-collapse:collapse;font-size:13px;min-width:880px}
-th,td{text-align:left;padding:10px;border-bottom:1px solid rgba(255,255,255,0.06)}
-th{color:var(--muted);font-size:12px;white-space:nowrap}
-tr.match{background:linear-gradient(90deg, rgba(11,36,48,0.6), rgba(6,28,36,0.4))}
-.small{font-size:12px;color:var(--muted)}
-.tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px}
-.tag.above{background:#0f4637;color:#c9ffee}
-.tag.below{background:#462323;color:#ffd7d7}
-.green{color:#7be3c7}
-.red{color:#ff9a9a}
-@media(max-width:720px){ th,td{padding:8px;font-size:12px} h1{font-size:16px} }
-</style>
+  <meta charset="UTF-8">
+  <title>Bollinger Band TA-Style Scanner</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; background: #f4f4f9; }
+    h1 { text-align: center; }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+    th, td { border: 1px solid #ccc; padding: 8px; text-align: center; }
+    th { cursor: pointer; background: #eee; }
+    button { margin: 10px 0; padding: 8px 16px; font-size: 16px; }
+    #progress { margin-top: 10px; font-weight: bold; }
+  </style>
 </head>
 <body>
-<header>
-  <div>
-    <h1>hserus 5</h1>
-    <div class="small">hserus 5</div>
-  </div>
-
-  <div class="controls">
-    <label class="small">Sort:
-      <select id="sortSelect" title="Choose sort column & order">
-        <option value="symbol_asc">Symbol ↑</option>
-        <option value="symbol_desc">Symbol ↓</option>
-
-        <option value="closePct_desc">Close % ↓</option>
-        <option value="closePct_asc">Close % ↑</option>
-
-        <option value="volPct_desc">Vol % ↓</option>
-        <option value="volPct_asc">Vol % ↑</option>
-
-        <option value="shortPct_desc">Short % ↓</option>
-        <option value="shortPct_asc">Short % ↑</option>
-
-        <option value="smaDiff_desc">SMA diff ↓</option>
-        <option value="smaDiff_asc">SMA diff ↑</option>
-
-        <option value="shortPctDelta_desc">Short % vs Prev % ↓</option>
-        <option value="shortPctDelta_asc">Short % vs Prev % ↑</option>
-      </select>
-    </label>
-
-    <button id="refreshBtn">Refresh Data</button>
-    <div id="status">Idle</div>
-  </div>
-</header>
-
-<main>
-  <div class="tablewrap">
-    <table aria-live="polite">
-      <thead>
-        <tr>
-          <th>Symbol</th>
-          <th>Close % (1h)</th>
-          <th>Vol % (vs prev)</th>
-          <th>Short % (vs prev)</th>
-          <th>20‑SMA Position</th>
-          <th>Short % vs Prev %</th>
-        </tr>
-      </thead>
-      <tbody id="resultsBody">
-        <tr><td colspan="6" class="small">Click <strong>Refresh Data</strong> to start scan.</td></tr>
-      </tbody>
-    </table>
-  </div>
-</main>
+  <h1>BB TA-Style Crypto Scanner</h1>
+  <button onclick="runScanner()">Refresh</button>
+  <div id="progress"></div>
+  <table id="results">
+    <thead>
+      <tr>
+        <th onclick="sortTable(0)">Symbol</th>
+        <th onclick="sortTable(1)">Close%</th>
+        <th onclick="sortTable(2)">Vol%</th>
+        <th onclick="sortTable(3)">PrevBB</th>
+        <th onclick="sortTable(4)">CrossBB</th>
+        <th onclick="sortTable(5)">3CrsBB</th>
+        <th onclick="sortTable(6)">BBDir</th>
+        <th onclick="sortTable(7)">Points</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
 
 <script>
-/* ================== Config ================== */
-const MAX_SYMBOLS = 200;           // universe size
-const KLINES_LIMIT = 30;           // 1h candles to fetch (need >= 20 for SMA)
-const SMA_PERIOD = 20;
-const INTERVAL_1H = '1h';
-const EXCLUDE = [
-  // Rough top-20 market cap exclusions; adjust as you like
-  'BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT','ADAUSDT','DOGEUSDT','TONUSDT','AVAXUSDT','DOTUSDT',
-  'TRXUSDT','SHIBUSDT','LINKUSDT','NEARUSDT','MATICUSDT','LTCUSDT','UNIUSDT','BCHUSDT','ICPUSDT','ETCUSDT'
-];
-const PAUSE_MS = 110;              // small delay to ease rate limits
+const BASE = "https://fapi.binance.com";
 
-/* ================== DOM ================== */
-const statusEl = document.getElementById('status');
-const refreshBtn = document.getElementById('refreshBtn');
-const resultsBody = document.getElementById('resultsBody');
-const sortSelect = document.getElementById('sortSelect');
-
-let results = [];
-
-/* ================== Utils ================== */
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-function pctChange(prev, curr) {
-  if (prev === 0 || prev == null || curr == null) return NaN;
-  return ((curr - prev) / prev) * 100;
-}
-function simpleSMA(values, period) {
-  if (!values || values.length < period) return NaN;
-  let sum = 0;
-  for (let i = values.length - period; i < values.length; i++) sum += values[i];
-  return sum / period;
-}
-function fmtPct(x) { return (isNaN(x) ? '—' : x.toFixed(2) + '%'); }
-function tagSMA(diff) { const above = diff >= 0; return `<span class="tag ${above?'above':'below'}">${above?'Above':'Below'}</span>`; }
-
-/* ================== Network ================== */
-async function fetchPerpetualSymbols() {
-  const url = 'https://fapi.binance.com/fapi/v1/exchangeInfo';
-  const r = await fetch(url);
-  if (!r.ok) throw new Error('exchangeInfo failed');
-  const data = await r.json();
-  return data.symbols
-    .filter(s => s.contractType === 'PERPETUAL' && s.symbol.endsWith('USDT') && !EXCLUDE.includes(s.symbol))
+async function fetchSymbols() {
+  const ex = await fetch(`${BASE}/fapi/v1/exchangeInfo`).then(r => r.json());
+  let symbols = ex.symbols
+    .filter(s => s.contractType === "PERPETUAL" && s.symbol.endsWith("USDT"))
     .map(s => s.symbol);
+  
+  // fetch top market cap to exclude top 20
+  const mkt = await fetch("https://api.binance.com/api/v3/ticker/24hr").then(r => r.json());
+  const capSorted = mkt.sort((a,b)=>parseFloat(b.quoteVolume)-parseFloat(a.quoteVolume));
+  const exclude = capSorted.slice(0,20).map(s=>s.symbol);
+  
+  return symbols.filter(s=>!exclude.includes(s)).slice(0,200);
 }
 
-async function fetchTopUniverse(limit = MAX_SYMBOLS) {
-  // Rank by 24h quoteVolume (activity/liquidity) and abs priceChangePercent as tiebreaker
-  const [tickRes, perp] = await Promise.all([
-    fetch('https://fapi.binance.com/fapi/v1/ticker/24hr'),
-    fetchPerpetualSymbols()
-  ]);
-  if (!tickRes.ok) throw new Error('ticker/24hr failed');
-  const tick = await tickRes.json();
-  return tick
-    .filter(t => t.symbol.endsWith('USDT') && perp.includes(t.symbol))
-    .sort((a,b) => {
-      const qa = parseFloat(a.quoteVolume || 0), qb = parseFloat(b.quoteVolume || 0);
-      if (qb !== qa) return qb - qa; // higher activity first
-      const pa = Math.abs(parseFloat(a.priceChangePercent || 0));
-      const pb = Math.abs(parseFloat(b.priceChangePercent || 0));
-      return pb - pa;
-    })
-    .slice(0, limit)
-    .map(t => t.symbol);
-}
-
-async function fetchKlines1h(symbol) {
-  const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${INTERVAL_1H}&limit=${KLINES_LIMIT}`;
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`klines failed ${symbol}`);
-  const raw = await r.json();
-  return raw.map(x => ({ open:+x[1], high:+x[2], low:+x[3], close:+x[4], volume:+x[5] })); // oldest -> newest
-}
-
-async function fetchShortAccount1h(symbol, limit=3) {
-  // Need last two values for current %; last three if we want prev %
-  const url = `https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol=${symbol}&period=1h&limit=${limit}`;
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`shortAccount failed ${symbol}`);
-  const arr = await r.json();
-  return arr.map(o => (o && o.longShortRatio != null) ? parseFloat(o.longShortRatio) : null); // oldest -> newest
-}
-
-/* ================== Sorting ================== */
-function sortResults(list, sortKey) {
-  const [key, dir] = sortKey.split('_');
-  const mul = dir === 'asc' ? 1 : -1;
-  return list.sort((a,b) => {
-    let va = a[key], vb = b[key];
-    if (key === 'symbol') { return mul * a.symbol.localeCompare(b.symbol); }
-    if (isNaN(va) && isNaN(vb)) return 0;
-    if (isNaN(va)) return 1 * mul;
-    if (isNaN(vb)) return -1 * mul;
-    return (va - vb) * mul;
-  });
-}
-
-/* ================== Rendering ================== */
-function appendRow(o) {
-  const tr = document.createElement('tr');
-  tr.className = 'match';
-  tr.innerHTML = `
-    <td><strong>${o.symbol}</strong></td>
-    <td>${fmtPct(o.closePct)}</td>
-    <td>${fmtPct(o.volPct)}</td>
-    <td>${fmtPct(o.shortPct)}</td>
-    <td>${tagSMA(o.smaDiff)}</td>
-    <td>${isNaN(o.shortPctDelta) ? '—' : (o.shortPctDelta > 0 ? '<span class="green">Greater</span>' : (o.shortPctDelta < 0 ? '<span class="red">Less</span>' : 'Equal'))}</td>
-  `;
-  resultsBody.appendChild(tr);
-}
-
-function renderTable() {
-  const sel = sortSelect.value;
-  const sorted = sortResults([...results], sel);
-  resultsBody.innerHTML = '';
-  if (sorted.length === 0) {
-    resultsBody.innerHTML = '<tr><td colspan="6" class="small">No matches found.</td></tr>';
-    return;
+function calcBB(closes, period=20, mult=2) {
+  let sma = [], upper = [], lower = [];
+  for (let i=0; i<closes.length; i++) {
+    if (i < period-1) { sma.push(null); upper.push(null); lower.push(null); continue; }
+    let slice = closes.slice(i-period+1,i+1);
+    let mean = slice.reduce((a,b)=>a+b,0)/period;
+    let variance = slice.reduce((a,b)=>a+Math.pow(b-mean,2),0)/period;
+    let std = Math.sqrt(variance);
+    sma.push(mean);
+    upper.push(mean+mult*std);
+    lower.push(mean-mult*std);
   }
-  for (const r of sorted) appendRow(r);
+  return {sma, upper, lower};
 }
 
-/* ================== Core Logic ================== */
-function evaluateSymbol(symbol, klines, shortArr) {
-  // klines: oldest -> newest, >= 30
-  const n = klines.length;
-  if (n < 3) return null;
-  const last = klines[n-1], prev = klines[n-2];
+async function fetchKlines(symbol, interval="1h", limit=50) {
+  const url = `${BASE}/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+  return await fetch(url).then(r=>r.json());
+}
 
-  // Cond (1): current volume < previous volume
-  if (!(last.volume < prev.volume)) return null;
+function pctChange(curr, prev) { return ((curr-prev)/prev)*100; }
 
-  // Candle colour and close% (for display)
-  const closePct = pctChange(prev.close, last.close);
-  const isGreen = last.close > prev.close;
-  const isRed = last.close < prev.close;
-  if (!isGreen && !isRed) return null; // doji
+function checkConditions(data, symbol) {
+  const closes = data.map(d=>parseFloat(d[4]));
+  const highs = data.map(d=>parseFloat(d[2]));
+  const lows = data.map(d=>parseFloat(d[3]));
+  const vols = data.map(d=>parseFloat(d[5]));
 
-  // SMA20 over last 20 closes (including current)
-  const closes = klines.map(k => k.close);
-  const sma20 = simpleSMA(closes, SMA_PERIOD);
-  const smaDiff = (isNaN(sma20) ? NaN : (last.close - sma20));
+  const {sma, upper, lower} = calcBB(closes,20,2);
+  let n = closes.length-1;
 
-  // Require short array
-  if (!shortArr || shortArr.length < 2) return null;
-  const sPrev = shortArr[shortArr.length - 2];
-  const sNow  = shortArr[shortArr.length - 1];
-  if (sPrev == null || sNow == null) return null;
+  let currClose = closes[n], prevClose = closes[n-1];
+  let currVol = vols[n], prevVol = vols[n-1], prevPrevVol = vols[n-2];
+  let currHigh = highs[n], currLow = lows[n];
+  let candleGreen = currClose > prevClose;
 
-  // Cond (2): direction rule (contrarian to candle colour)
-  if (isRed && !(sNow > sPrev)) return null;
-  if (isGreen && !(sNow < sPrev)) return null;
+  let currSMA = sma[n], prevSMA = sma[n-1];
+  let currUpper = upper[n], prevUpper = upper[n-1];
+  let currLower = lower[n], prevLower = lower[n-1];
 
-  // Build metrics
-  const volPct = pctChange(prev.volume, last.volume);
-  const shortPct = pctChange(sPrev, sNow); // current short % chg
+  // condition 1
+  if ((candleGreen && currClose <= currSMA) || (!candleGreen && currClose >= currSMA)) return null;
 
-  // Need previous short % chg too (for compare), if available
-  let shortPctDelta = NaN;
-  if (shortArr.length >= 3 && shortArr[shortArr.length - 3] != null && sPrev != null) {
-    const sPrevPrev = shortArr[shortArr.length - 3];
-    const shortPctPrev = pctChange(sPrevPrev, sPrev);
-    shortPctDelta = (isNaN(shortPctPrev) || isNaN(shortPct)) ? NaN : (shortPct - shortPctPrev);
+  // condition 2
+  if ((candleGreen && !(currUpper > prevUpper)) || (!candleGreen && !(currLower < prevLower))) return null;
+
+  // compute stats
+  let closeChg = pctChange(currClose, prevClose).toFixed(2);
+  let volChg = pctChange(currVol, prevVol).toFixed(2);
+
+  let prevBB = (candleGreen ? (prevUpper<upper[n-2] ? "Yes":"No") : (prevLower>lower[n-2] ? "Yes":"No"));
+  let crossBB = (candleGreen ? (currHigh>currUpper?"Yes":"No") : (currLow<currLower?"Yes":"No"));
+  let cross3 = "No";
+  if (candleGreen) {
+    cross3 = highs.slice(n-3,n).some(h=>h>upper[n]) ? "Yes":"No";
+  } else {
+    cross3 = lows.slice(n-3,n).some(l=>l<lower[n]) ? "Yes":"No";
   }
+  let bbDir = (currUpper>prevUpper && currLower<prevLower) ? "Yes":"No";
+
+  // points
+  let pts = 0;
+  if (parseFloat(volChg)<100) pts++;
+  if (prevBB==="Yes") pts++;
+  if (crossBB==="No") pts++;
+  if (cross3==="No") pts++;
+  if (bbDir==="Yes") pts++;
 
   return {
     symbol,
-    closePct,
-    volPct,
-    shortPct,
-    smaDiff,
-    shortPctDelta
+    closeChg, volChg, prevBB, crossBB, cross3, bbDir, pts
   };
 }
 
-async function runScan() {
-  try {
-    results = [];
-    resultsBody.innerHTML = '<tr><td colspan="6" class="small">Preparing scan…</td></tr>';
-    statusEl.textContent = 'Fetching universe…';
-
-    const symbols = await fetchTopUniverse(MAX_SYMBOLS);
-    statusEl.textContent = `Scanning 0 / ${symbols.length}`;
-
-    let i = 0;
-    for (const sym of symbols) {
-      i++;
-      statusEl.textContent = `Scanning ${i} / ${symbols.length}: ${sym}`;
-      try {
-        // Step 1: fetch 1h klines first (cheap) and check volume condition
-        const kl = await fetchKlines1h(sym);
-        if (!kl || kl.length < 3) { await sleep(PAUSE_MS); continue; }
-        const last = kl[kl.length - 1], prev = kl[kl.length - 2];
-        if (!(last.volume < prev.volume)) { await sleep(PAUSE_MS); continue; }
-
-        // Passed precheck → fetch just enough shortAccount data (limit=3 for prev % too)
-        let shortArr = [];
-        try {
-          shortArr = await fetchShortAccount1h(sym, 3);
-        } catch (e) {
-          // skip symbol on fetch error
-          await sleep(PAUSE_MS); continue;
-        }
-        const obj = evaluateSymbol(sym, kl, shortArr);
-        if (obj) { results.push(obj); appendRow(obj); }
-      } catch (e) {
-        // ignore this symbol
+async function runScanner() {
+  const tbody=document.querySelector("#results tbody");
+  tbody.innerHTML="";
+  document.getElementById("progress").innerText="Fetching symbols...";
+  const syms=await fetchSymbols();
+  let i=0;
+  for (let s of syms) {
+    i++;
+    document.getElementById("progress").innerText=`Scanning ${i} of ${syms.length}...`;
+    try {
+      let kl = await fetchKlines(s,"1h",50);
+      let res = checkConditions(kl,s);
+      if (res) {
+        let row = `<tr>
+          <td>${res.symbol}</td>
+          <td>${res.closeChg}</td>
+          <td>${res.volChg}</td>
+          <td>${res.prevBB}</td>
+          <td>${res.crossBB}</td>
+          <td>${res.cross3}</td>
+          <td>${res.bbDir}</td>
+          <td>${res.pts}</td>
+        </tr>`;
+        tbody.insertAdjacentHTML("beforeend",row);
       }
-      await sleep(PAUSE_MS);
-    }
-
-    statusEl.textContent = `Scan complete — ${results.length} matches.`;
-    renderTable();
-  } catch (err) {
-    console.error(err);
-    statusEl.textContent = 'Error: ' + (err.message || err);
+    } catch(e){console.log("err",s,e);}
   }
+  document.getElementById("progress").innerText="Done!";
 }
 
-/* ================== Wire-up ================== */
-refreshBtn.addEventListener('click', () => {
-  refreshBtn.disabled = true;
-  resultsBody.innerHTML = '<tr><td colspan="6" class="small">Starting scan…</td></tr>';
-  runScan().finally(() => { refreshBtn.disabled = false; });
-});
-
-sortSelect.addEventListener('change', renderTable);
-
-// auto run on load
-window.addEventListener('load', () => { refreshBtn.click(); });
+function sortTable(n) {
+  const table = document.getElementById("results");
+  let switching=true, dir="asc", switchcount=0;
+  while(switching) {
+    switching=false;
+    let rows=table.rows;
+    for(let i=1;i<rows.length-1;i++) {
+      let x=rows[i].getElementsByTagName("TD")[n];
+      let y=rows[i+1].getElementsByTagName("TD")[n];
+      let cmp=false;
+      if(dir==="asc") {
+        cmp=(isNaN(x.innerHTML)?x.innerHTML.toLowerCase()>y.innerHTML.toLowerCase():parseFloat(x.innerHTML)>parseFloat(y.innerHTML));
+      } else {
+        cmp=(isNaN(x.innerHTML)?x.innerHTML.toLowerCase()<y.innerHTML.toLowerCase():parseFloat(x.innerHTML)<parseFloat(y.innerHTML));
+      }
+      if(cmp){ rows[i].parentNode.insertBefore(rows[i+1],rows[i]); switching=true; switchcount++; break; }
+    }
+    if(switchcount==0 && dir==="asc"){ dir="desc"; switching=true; }
+  }
+}
 </script>
 </body>
 </html>
