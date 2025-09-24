@@ -1,190 +1,100 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-  <meta charset="UTF-8">
   <title>hserus5</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 20px; background: #f4f4f9; }
-    h1 { text-align: center; }
-    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-    th, td { border: 1px solid #ccc; padding: 8px; text-align: center; }
-    th { cursor: pointer; background: #eee; }
-    button { margin: 10px 0; padding: 8px 16px; font-size: 16px; }
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    button { padding: 8px 16px; margin-bottom: 10px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { padding: 8px; border: 1px solid #ccc; text-align: center; }
+    th { cursor: pointer; background: #f2f2f2; }
     #progress { margin-top: 10px; font-weight: bold; }
   </style>
 </head>
 <body>
-  <h1>hserus5</h1>
-  <button onclick="runScanner()">Refresh</button>
-  <div id="progress"></div>
-  <table id="results">
-    <thead>
-      <tr>
-        <th onclick="sortTable(0)">Symbol</th>
-        <th onclick="sortTable(1)">Close%</th>
-        <th onclick="sortTable(2)">Vol%</th>
-        <th onclick="sortTable(3)">PrevBB</th>
-        <th onclick="sortTable(4)">CrossBB</th>
-        <th onclick="sortTable(5)">3CrsBB</th>
-        <th onclick="sortTable(6)">BBDir</th>
-        <th onclick="sortTable(7)">DistBB%</th>
-        <th onclick="sortTable(8)">Points</th>
-      </tr>
-    </thead>
-    <tbody></tbody>
-  </table>
+
+<h2>hserus5</h2>
+<button onclick="scanData()">Refresh</button>
+<div id="progress"></div>
+
+<table id="scannerTable">
+  <thead>
+    <tr>
+      <th onclick="sortTable(0)">Symbol</th>
+      <th onclick="sortTable(1)">Hourly Close %</th>
+      <th onclick="sortTable(2)">Hourly Vol %</th>
+      <th onclick="sortTable(3)">Funding</th>
+      <th onclick="sortTable(4)">Δ Funding %</th>
+      <th onclick="sortTable(5)">Close Since Cycle %</th>
+      <th onclick="sortTable(6)">Cycle</th>
+    </tr>
+  </thead>
+  <tbody></tbody>
+</table>
 
 <script>
-const BASE = "https://fapi.binance.com";
+async function scanData() {
+  const tableBody = document.querySelector("#scannerTable tbody");
+  tableBody.innerHTML = "";
+  const progress = document.getElementById("progress");
 
-async function fetchSymbols() {
-  const ex = await fetch(`${BASE}/fapi/v1/exchangeInfo`).then(r => r.json());
-  let symbols = ex.symbols
-    .filter(s => s.contractType === "PERPETUAL" && s.symbol.endsWith("USDT"))
-    .map(s => s.symbol);
-  
-  // fetch top market cap to exclude top 20
-  const mkt = await fetch("https://api.binance.com/api/v3/ticker/24hr").then(r => r.json());
-  const capSorted = mkt.sort((a,b)=>parseFloat(b.quoteVolume)-parseFloat(a.quoteVolume));
-  const exclude = capSorted.slice(0,20).map(s=>s.symbol);
-  
-  return symbols.filter(s=>!exclude.includes(s)).slice(0,200);
-}
+  // Example list of symbols (replace with API call)
+  const symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT"]; 
+  let i = 0;
 
-function calcBB(closes, period=20, mult=2) {
-  let sma = [], upper = [], lower = [];
-  for (let i=0; i<closes.length; i++) {
-    if (i < period-1) { sma.push(null); upper.push(null); lower.push(null); continue; }
-    let slice = closes.slice(i-period+1,i+1);
-    let mean = slice.reduce((a,b)=>a+b,0)/period;
-    let variance = slice.reduce((a,b)=>a+Math.pow(b-mean,2),0)/period;
-    let std = Math.sqrt(variance);
-    sma.push(mean);
-    upper.push(mean+mult*std);
-    lower.push(mean-mult*std);
-  }
-  return {sma, upper, lower};
-}
-
-async function fetchKlines(symbol, interval="1h", limit=50) {
-  const url = `${BASE}/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
-  return await fetch(url).then(r=>r.json());
-}
-
-function pctChange(curr, prev) { return ((curr-prev)/prev)*100; }
-
-function checkConditions(data, symbol) {
-  const closes = data.map(d=>parseFloat(d[4]));
-  const highs = data.map(d=>parseFloat(d[2]));
-  const lows = data.map(d=>parseFloat(d[3]));
-  const vols = data.map(d=>parseFloat(d[5]));
-
-  const {sma, upper, lower} = calcBB(closes,20,2);
-  let n = closes.length-1;
-
-  let currClose = closes[n], prevClose = closes[n-1];
-  let currVol = vols[n], prevVol = vols[n-1];
-  let currHigh = highs[n], currLow = lows[n];
-  let candleGreen = currClose > prevClose;
-
-  let currSMA = sma[n];
-  let currUpper = upper[n], prevUpper = upper[n-1];
-  let currLower = lower[n], prevLower = lower[n-1];
-
-  // condition 1
-  if ((candleGreen && currClose <= currSMA) || (!candleGreen && currClose >= currSMA)) return null;
-
-  // condition 2
-  if ((candleGreen && !(currUpper > prevUpper)) || (!candleGreen && !(currLower < prevLower))) return null;
-
-  // compute stats
-  let closeChg = pctChange(currClose, prevClose).toFixed(2);
-  let volChg = pctChange(currVol, prevVol).toFixed(2);
-
-  let prevBB = (candleGreen ? (prevUpper<upper[n-2] ? "Yes":"No") : (prevLower>lower[n-2] ? "Yes":"No"));
-  let crossBB = (candleGreen ? (currHigh>currUpper?"Yes":"No") : (currLow<currLower?"Yes":"No"));
-  let cross3 = "No";
-  if (candleGreen) {
-    cross3 = highs.slice(n-3,n).some(h=>h>currUpper) ? "Yes":"No";
-  } else {
-    cross3 = lows.slice(n-3,n).some(l=>l<currLower) ? "Yes":"No";
-  }
-  let bbDir = (currUpper>prevUpper && currLower<prevLower) ? "Yes":"No";
-
-  // NEW column: distance from BB
-  let distBB = 0;
-  if (candleGreen) {
-    distBB = ((currUpper - currClose) / currClose * 100).toFixed(2);
-  } else {
-    distBB = ((currClose - currLower) / currClose * 100).toFixed(2);
-  }
-
-  // points
-  let pts = 0;
-  if (parseFloat(volChg)<100) pts++;
-  if (prevBB==="Yes") pts++;
-  if (crossBB==="No") pts++;
-  if (cross3==="No") pts++;
-  if (bbDir==="Yes") pts++;
-
-  return {
-    symbol,
-    closeChg, volChg, prevBB, crossBB, cross3, bbDir, distBB, pts
-  };
-}
-
-async function runScanner() {
-  const tbody=document.querySelector("#results tbody");
-  tbody.innerHTML="";
-  document.getElementById("progress").innerText="Fetching symbols...";
-  const syms=await fetchSymbols();
-  let i=0;
-  for (let s of syms) {
+  for (const symbol of symbols) {
     i++;
-    document.getElementById("progress").innerText=`Scanning ${i} of ${syms.length}...`;
-    try {
-      let kl = await fetchKlines(s,"1h",50);
-      let res = checkConditions(kl,s);
-      if (res) {
-        let row = `<tr>
-          <td>${res.symbol}</td>
-          <td>${res.closeChg}</td>
-          <td>${res.volChg}</td>
-          <td>${res.prevBB}</td>
-          <td>${res.crossBB}</td>
-          <td>${res.cross3}</td>
-          <td>${res.bbDir}</td>
-          <td>${res.distBB}</td>
-          <td>${res.pts}</td>
-        </tr>`;
-        tbody.insertAdjacentHTML("beforeend",row);
-      }
-    } catch(e){console.log("err",s,e);}
+    progress.textContent = `Scanning ${i} of ${symbols.length}...`;
+
+    // Replace with real API calls:
+    const hourlyCloseChange = (Math.random()*4-2).toFixed(2);
+    const hourlyVolChange = (Math.random()*20-10).toFixed(2);
+    const currFunding = (Math.random()*0.02-0.01).toFixed(4);
+    const prevFunding = (Math.random()*0.02-0.01).toFixed(4);
+    const fundingDiff = (((currFunding - prevFunding) / Math.abs(prevFunding || 1)) * 100).toFixed(2);
+    const closeSinceCycle = (Math.random()*10-5).toFixed(2);
+    const cycle = ["4h","8h"][Math.floor(Math.random()*2)];
+
+    const row = `<tr>
+      <td>${symbol}</td>
+      <td>${hourlyCloseChange}%</td>
+      <td>${hourlyVolChange}%</td>
+      <td>${currFunding}</td>
+      <td>${fundingDiff}%</td>
+      <td>${closeSinceCycle}%</td>
+      <td>${cycle}</td>
+    </tr>`;
+    tableBody.innerHTML += row;
   }
-  document.getElementById("progress").innerText="Done!";
+  progress.textContent = "Done";
 }
 
+// Simple sort
 function sortTable(n) {
-  const table = document.getElementById("results");
-  let switching=true, dir="asc", switchcount=0;
-  while(switching) {
-    switching=false;
-    let rows=table.rows;
-    for(let i=1;i<rows.length-1;i++) {
-      let x=rows[i].getElementsByTagName("TD")[n];
-      let y=rows[i+1].getElementsByTagName("TD")[n];
-      let cmp=false;
-      if(dir==="asc") {
-        cmp=(isNaN(x.innerHTML)?x.innerHTML.toLowerCase()>y.innerHTML.toLowerCase():parseFloat(x.innerHTML)>parseFloat(y.innerHTML));
-      } else {
-        cmp=(isNaN(x.innerHTML)?x.innerHTML.toLowerCase()<y.innerHTML.toLowerCase():parseFloat(x.innerHTML)<parseFloat(y.innerHTML));
+  const table = document.getElementById("scannerTable");
+  let switching = true, dir = "asc", switchcount = 0;
+  while (switching) {
+    switching = false;
+    const rows = table.rows;
+    for (let i = 1; i < rows.length-1; i++) {
+      let shouldSwitch = false;
+      let x = rows[i].getElementsByTagName("TD")[n];
+      let y = rows[i+1].getElementsByTagName("TD")[n];
+      let cmpX = parseFloat(x.innerHTML) || x.innerHTML.toLowerCase();
+      let cmpY = parseFloat(y.innerHTML) || y.innerHTML.toLowerCase();
+      if ((dir=="asc" && cmpX > cmpY) || (dir=="desc" && cmpX < cmpY)) {
+        shouldSwitch = true; break;
       }
-      if(cmp){ rows[i].parentNode.insertBefore(rows[i+1],rows[i]); switching=true; switchcount++; break; }
     }
-    if(switchcount==0 && dir==="asc"){ dir="desc"; switching=true; }
+    if (shouldSwitch) {
+      rows[i].parentNode.insertBefore(rows[i+1], rows[i]);
+      switching = true; switchcount++;
+    } else {
+      if (switchcount == 0 && dir == "asc") { dir = "desc"; switching = true; }
+    }
   }
 }
 </script>
+
 </body>
 </html>
-
