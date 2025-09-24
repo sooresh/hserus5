@@ -1,272 +1,148 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>hserus5</title>
-<style>
-  body{font-family:Inter,Arial,Helvetica,sans-serif;margin:16px;background:#0b1620;color:#e6f3f6}
-  h1{margin:0 0 8px;font-size:18px}
-  .controls{display:flex;gap:8px;align-items:center;margin-bottom:8px}
-  button{padding:8px 12px;border-radius:8px;border:1px solid #17323d;background:#0e2a33;color:#e6f3f6;cursor:pointer}
-  #status{font-size:13px;color:#9fb6c7}
-  table{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px;min-width:900px}
-  th,td{padding:8px;border-bottom:1px solid rgba(255,255,255,0.04);text-align:left}
-  th{color:#9fb6c7;cursor:pointer}
-  tr.match{background:linear-gradient(90deg, rgba(11,36,48,0.35), rgba(6,28,36,0.12))}
-  .small{font-size:12px;color:#9fb6c7}
-  .numeric{text-align:right;padding-right:16px}
-  .green{color:#7be3c7}
-  .red{color:#ff9a9a}
-  @media(max-width:900px){ table{min-width:800px} }
-</style>
+  <meta charset="UTF-8">
+  <title>hserus5</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f8f9fa; margin: 20px; }
+    h2 { margin-bottom: 10px; }
+    #progress { margin: 10px 0; font-weight: bold; }
+    table { width: 100%; border-collapse: collapse; background: white; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: center; }
+    th { background: #007bff; color: white; cursor: pointer; }
+    tr:nth-child(even) { background: #f2f2f2; }
+    button { margin: 10px 0; padding: 8px 16px; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 5px; }
+    button:hover { background: #0056b3; }
+  </style>
 </head>
 <body>
-  <h1>hserus5</h1>
-  <div class="controls">
-    <button id="refreshBtn">Refresh</button>
-    <div id="status">Idle</div>
-  </div>
-
-  <table id="results">
+  <h2>hserus5</h2>
+  <button onclick="loadScanner()">🔄 Refresh</button>
+  <div id="progress">Progress: 0 / 250</div>
+  <table id="scannerTable">
     <thead>
       <tr>
         <th onclick="sortTable(0)">Symbol</th>
-        <th onclick="sortTable(1)">Close%</th>
-        <th onclick="sortTable(2)">Vol%</th>
-        <th onclick="sortTable(3)">SinceCycle%</th>
-        <th onclick="sortTable(4)">FundNow</th>
-        <th onclick="sortTable(5)">FundPrev</th>
-        <th onclick="sortTable(6)">ΔFund%</th>
+        <th onclick="sortTable(1)">Close % (1h)</th>
+        <th onclick="sortTable(2)">Vol % (1h)</th>
+        <th onclick="sortTable(3)">Cycle %</th>
+        <th onclick="sortTable(4)">Curr FR</th>
+        <th onclick="sortTable(5)">Prev FR</th>
+        <th onclick="sortTable(6)">FR Δ%</th>
         <th onclick="sortTable(7)">Cycle</th>
       </tr>
     </thead>
     <tbody></tbody>
   </table>
 
-<script>
-/* CONFIG */
-const BASE = 'https://fapi.binance.com';
-const ENDPOINT_EXCHANGE = '/fapi/v1/exchangeInfo';
-const ENDPOINT_TICKER = '/fapi/v1/ticker/24hr';
-const ENDPOINT_KLINES = '/fapi/v1/klines';
-const ENDPOINT_FUND = '/fapi/v1/fundingRate';
+  <script>
+    const BASE_URL = "https://fapi.binance.com/fapi/v1";
+    const excludeSymbols = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","AVAXUSDT","DOGEUSDT","TRXUSDT","DOTUSDT",
+                            "LINKUSDT","MATICUSDT","SHIBUSDT","BCHUSDT","LTCUSDT","ICPUSDT","NEARUSDT","UNIUSDT","ETCUSDT","APTUSDT",
+                            "FILUSDT","OPUSDT","XLMUSDT","INJUSDT","SUIUSDT","IMXUSDT","ATOMUSDT","ARBUSDT","GRTUSDT","MKRUSDT"]; // top 30 mcap to exclude
 
-const KLINE_INTERVAL = '1h';
-const KLINE_LIMIT = 150; // fetch enough candles to cover funding timestamp
-const PAUSE_MS = 120;    // polite delay between symbols
-
-/* DOM */
-const refreshBtn = document.getElementById('refreshBtn');
-const statusEl = document.getElementById('status');
-const tbody = document.querySelector('#results tbody');
-
-let rows = []; // matched rows
-
-/* HELPERS */
-function sleep(ms){ return new Promise(r=>setTimeout(r, ms)); }
-function pct(prev, cur){ if(prev==null||prev===0||cur==null) return NaN; return ((cur - prev)/prev)*100; }
-function fmtNum(n, digits=2){ return (isNaN(n) ? '—' : (n>=0?'+':'') + Number(n).toFixed(digits) + '%'); }
-function fmtPlain(n, digits=6){ return (n==null || isNaN(n)) ? '—' : Number(n).toFixed(digits); }
-
-/* NETWORK: fetch list of USDT perpetual symbols */
-async function fetchUSDTPerpSymbols(){
-  statusEl.textContent = 'Fetching symbols...';
-  const res = await fetch(BASE + ENDPOINT_EXCHANGE);
-  if(!res.ok) throw new Error('exchangeInfo failed');
-  const info = await res.json();
-  return info.symbols
-    .filter(s => s.contractType === 'PERPETUAL' && s.symbol.endsWith('USDT'))
-    .map(s => s.symbol);
-}
-
-/* Fetch latest 2 funding rates for a symbol */
-async function fetchLastTwoFunding(symbol){
-  const url = `${BASE + ENDPOINT_FUND}?symbol=${symbol}&limit=2`;
-  const r = await fetch(url);
-  if(!r.ok) throw new Error('funding fetch failed for ' + symbol);
-  const arr = await r.json(); // likely ordered newest->oldest or older->newer; we'll sort by fundingTime
-  if(!Array.isArray(arr) || arr.length === 0) return [];
-  return arr.sort((a,b) => a.fundingTime - b.fundingTime); // ascending by time
-}
-
-/* Fetch klines 1h */
-async function fetchKlines(symbol, limit=KLINE_LIMIT){
-  const url = `${BASE + ENDPOINT_KLINES}?symbol=${symbol}&interval=${KLINE_INTERVAL}&limit=${limit}`;
-  const r = await fetch(url);
-  if(!r.ok) throw new Error('klines failed for ' + symbol);
-  return await r.json(); // array of arrays
-}
-
-/* Find start-close for cycle: try to locate a kline whose open time == prevFundingTime; otherwise take nearest later or previous */
-function findCycleStartClose(klines, prevFundingTime){
-  // kline[0] is openTime in ms; klines are oldest->newest
-  for(const k of klines){
-    if(k[0] === prevFundingTime) return parseFloat(k[4]);
-  }
-  // if exact not found, find the first kline with openTime >= prevFundingTime
-  for(const k of klines){
-    if(k[0] >= prevFundingTime) return parseFloat(k[4]);
-  }
-  // fallback: take the oldest close available
-  if(klines.length>0) return parseFloat(klines[0][4]);
-  return NaN;
-}
-
-/* Create table row element and append */
-function appendRow(obj){
-  const tr = document.createElement('tr');
-  tr.className = 'match';
-  tr.innerHTML = `
-    <td>${obj.symbol}</td>
-    <td class="numeric">${fmtNum(obj.closePct)}</td>
-    <td class="numeric">${fmtNum(obj.volPct)}</td>
-    <td class="numeric">${fmtNum(obj.sinceCyclePct)}</td>
-    <td class="numeric">${fmtPlain(obj.fundNow)}</td>
-    <td class="numeric">${fmtPlain(obj.fundPrev)}</td>
-    <td class="numeric">${fmtNum(obj.fundDiffPct)}</td>
-    <td class="numeric">${obj.cycleHours}h</td>
-  `;
-  tbody.appendChild(tr);
-}
-
-/* Sorting helper */
-function sortTable(colIndex){
-  const table = document.getElementById('results');
-  const rowsArray = Array.from(table.tBodies[0].rows);
-  // determine key by column
-  const keys = ['symbol','closePct','volPct','sinceCyclePct','fundNow','fundPrev','fundDiffPct','cycleHours'];
-  const key = keys[colIndex] || keys[0];
-  // toggle order
-  let dir = table.getAttribute('data-sort-dir') || 'desc';
-  let prevCol = table.getAttribute('data-sort-col') || '-1';
-  if(String(prevCol) === String(colIndex)){
-    dir = dir === 'asc' ? 'desc' : 'asc';
-  } else {
-    dir = 'desc';
-  }
-  table.setAttribute('data-sort-col', colIndex);
-  table.setAttribute('data-sort-dir', dir);
-
-  rowsArray.sort((a,b)=>{
-    const va = a.cells[colIndex].innerText.replace('%','') || a.cells[colIndex].innerText;
-    const vb = b.cells[colIndex].innerText.replace('%','') || b.cells[colIndex].innerText;
-    const na = isNaN(Number(va));
-    const nb = isNaN(Number(vb));
-    if(!na && !nb){
-      return dir === 'asc' ? Number(va) - Number(vb) : Number(vb) - Number(va);
-    } else {
-      return dir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+    async function fetchJSON(url) {
+      const res = await fetch(url);
+      return res.json();
     }
-  });
-  // re-append in order
-  rowsArray.forEach(r => table.tBodies[0].appendChild(r));
-}
 
-/* Main scanning logic */
-async function runScan(){
-  try{
-    tbody.innerHTML = '<tr><td colspan="8" class="small">Preparing scan…</td></tr>';
-    refreshBtn.disabled = true;
-    rows = [];
-    const symbols = await fetchUSDTPerpSymbols();
-    statusEl.textContent = `Scanning 0 / ${symbols.length}`;
-    let i = 0;
-    for(const sym of symbols){
-      i++;
-      statusEl.textContent = `Scanning ${i} / ${symbols.length}: ${sym}`;
-      try{
-        // 1) funding last two
-        let fr = [];
-        try { fr = await fetchLastTwoFunding(sym); }
-        catch(e){ /* skip on error */ fr = []; }
-        if(fr.length < 2) { await sleep(PAUSE_MS); continue; }
-        // fr sorted ascending: [prev, curr]
-        const prevF = fr[0], currF = fr[1];
-        const fundPrev = Number(prevF.fundingRate);
-        const fundNow = Number(currF.fundingRate);
-        // skip if same
-        if(fundNow === fundPrev){
-          await sleep(PAUSE_MS);
-          continue;
+    async function loadScanner() {
+      document.querySelector("#progress").innerText = "Progress: 0 / 250";
+      const tbody = document.querySelector("#scannerTable tbody");
+      tbody.innerHTML = "";
+
+      const exchangeInfo = await fetchJSON(`${BASE_URL}/exchangeInfo`);
+      let symbols = exchangeInfo.symbols.filter(s => s.contractType === "PERPETUAL" && s.symbol.endsWith("USDT"))
+                        .map(s => s.symbol);
+
+      // Filter out excluded symbols
+      symbols = symbols.filter(sym => !excludeSymbols.includes(sym));
+      symbols = symbols.slice(0, 250);
+
+      let count = 0;
+      for (let sym of symbols) {
+        count++;
+        document.querySelector("#progress").innerText = `Scanning: ${count} / ${symbols.length}`;
+
+        try {
+          // kline for 1h
+          const klines = await fetchJSON(`${BASE_URL}/klines?symbol=${sym}&interval=1h&limit=2`);
+          const prev = klines[0], curr = klines[1];
+          const prevClose = parseFloat(prev[4]), currClose = parseFloat(curr[4]);
+          const prevVol = parseFloat(prev[5]), currVol = parseFloat(curr[5]);
+
+          const closeChg = ((currClose - prevClose) / prevClose * 100).toFixed(2);
+          const volChg = ((currVol - prevVol) / prevVol * 100).toFixed(2);
+
+          // Funding rates
+          const funding = await fetchJSON(`${BASE_URL}/fundingRate?symbol=${sym}&limit=2`);
+          if (funding.length < 2) continue;
+          const prevFR = parseFloat(funding[1].fundingRate) * 100;
+          const currFR = parseFloat(funding[0].fundingRate) * 100;
+
+          // Exclude 0.01% and 0.005%
+          if ([0.01, 0.005].includes(Math.abs(prevFR)) || [0.01, 0.005].includes(Math.abs(currFR))) continue;
+
+          if (prevFR === currFR) continue; // skip if same
+
+          const frDelta = (currFR - prevFR).toFixed(4);
+          const frDeltaPerc = prevFR !== 0 ? ((currFR - prevFR) / Math.abs(prevFR) * 100).toFixed(2) : "NA";
+          const cycle = "8h"; // Binance perpetual default
+
+          // Cycle % (since start of FR cycle)
+          const now = new Date();
+          const cycleStartHour = Math.floor(now.getUTCHours() / 8) * 8;
+          const cycleStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), cycleStartHour, 0, 0));
+          const klinesCycle = await fetchJSON(`${BASE_URL}/klines?symbol=${sym}&interval=1h&startTime=${cycleStart.getTime()}`);
+          if (!klinesCycle.length) continue;
+          const startClose = parseFloat(klinesCycle[0][4]);
+          const cycleCloseChg = ((currClose - startClose) / startClose * 100).toFixed(2);
+
+          // Add row
+          const row = `<tr>
+            <td>${sym}</td>
+            <td>${closeChg}</td>
+            <td>${volChg}</td>
+            <td>${cycleCloseChg}</td>
+            <td>${currFR.toFixed(4)}%</td>
+            <td>${prevFR.toFixed(4)}%</td>
+            <td>${frDeltaPerc}%</td>
+            <td>${cycle}</td>
+          </tr>`;
+          tbody.insertAdjacentHTML("beforeend", row);
+
+        } catch (err) {
+          console.error("Error for symbol", sym, err);
         }
-        // cycle hours
-        const cycleMs = currF.fundingTime - prevF.fundingTime;
-        const cycleHours = Math.round(cycleMs / (1000*60*60));
-
-        // 2) fetch klines
-        let kl = [];
-        try { kl = await fetchKlines(sym, KLINE_LIMIT); }
-        catch(e){ kl = []; }
-        if(!Array.isArray(kl) || kl.length < 3){ await sleep(PAUSE_MS); continue; }
-
-        // ensure klines oldest->newest (binance returns oldest->newest)
-        // compute close% and vol%
-        const last = kl[kl.length-1];
-        const prev = kl[kl.length-2];
-        const lastClose = Number(last[4]), prevClose = Number(prev[4]);
-        const lastVol = Number(last[5]), prevVol = Number(prev[5]);
-
-        const closePct = pct(prevClose, lastClose);
-        const volPct = pct(prevVol, lastVol);
-
-        // find cycle start close using prevF.fundingTime
-        const prevFundingTime = prevF.fundingTime;
-        const startClose = findCycleStartClose(kl, prevFundingTime);
-        const sinceCyclePct = pct(startClose, lastClose);
-
-        // funding diff %
-        let fundDiffPct = NaN;
-        if(fundPrev === 0){
-          fundDiffPct = NaN; // undefined/infinite
-        } else {
-          fundDiffPct = ((fundNow - fundPrev)/Math.abs(fundPrev)) * 100;
-        }
-
-        const obj = {
-          symbol: sym,
-          closePct,
-          volPct,
-          sinceCyclePct,
-          fundNow,
-          fundPrev,
-          fundDiffPct,
-          cycleHours
-        };
-
-        rows.push(obj);
-        appendRow(obj);
-      } catch(errSym){
-        // ignore symbol error
       }
-      await sleep(PAUSE_MS);
+      document.querySelector("#progress").innerText = `Completed: ${symbols.length} symbols scanned`;
     }
 
-    statusEl.textContent = `Scan complete — ${rows.length} results.`;
-    refreshBtn.disabled = false;
-    // final sort default: by fundDiffPct desc (or leave as appended). We'll leave as appended but user can sort.
-  } catch(err){
-    console.error(err);
-    statusEl.textContent = 'Error: ' + (err.message || err);
-    refreshBtn.disabled = false;
-    tbody.innerHTML = '<tr><td colspan="8" class="small">Error during scan. See console.</td></tr>';
-  }
-}
+    function sortTable(n) {
+      const table = document.getElementById("scannerTable");
+      let switching = true, dir = "asc", switchcount = 0;
+      while (switching) {
+        switching = false;
+        const rows = table.rows;
+        for (let i = 1; i < rows.length - 1; i++) {
+          let shouldSwitch = false;
+          let x = rows[i].getElementsByTagName("TD")[n];
+          let y = rows[i + 1].getElementsByTagName("TD")[n];
+          let cmpx = parseFloat(x.innerHTML) || x.innerHTML.toLowerCase();
+          let cmpy = parseFloat(y.innerHTML) || y.innerHTML.toLowerCase();
+          if (dir === "asc" && cmpx > cmpy) { shouldSwitch = true; break; }
+          if (dir === "desc" && cmpx < cmpy) { shouldSwitch = true; break; }
+        }
+        if (shouldSwitch) {
+          rows[i].parentNode.insertBefore(rows[i + 1], rows[i]);
+          switching = true; switchcount++;
+        } else {
+          if (switchcount === 0 && dir === "asc") { dir = "desc"; switching = true; }
+        }
+      }
+    }
 
-/* Wire */
-refreshBtn.addEventListener('click', () => {
-  tbody.innerHTML = '<tr><td colspan="8" class="small">Starting scan…</td></tr>';
-  runScan();
-});
-
-// sorting by clicking table headers
-document.querySelectorAll('#results thead th').forEach((th, idx) => {
-  th.addEventListener('click', () => sortTable(idx));
-});
-
-// Run on load
-window.addEventListener('load', () => { refreshBtn.click(); });
-
-</script>
+    loadScanner();
+  </script>
 </body>
 </html>
