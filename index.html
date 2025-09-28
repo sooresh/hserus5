@@ -4,145 +4,141 @@
   <meta charset="UTF-8">
   <title>hserus5</title>
   <style>
-    body { font-family: Arial, sans-serif; background: #f8f9fa; margin: 20px; }
-    h2 { margin-bottom: 10px; }
-    #progress { margin: 10px 0; font-weight: bold; }
-    table { width: 100%; border-collapse: collapse; background: white; }
-    th, td { border: 1px solid #ddd; padding: 8px; text-align: center; }
-    th { background: #007bff; color: white; cursor: pointer; }
-    tr:nth-child(even) { background: #f2f2f2; }
-    button { margin: 10px 0; padding: 8px 16px; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 5px; }
-    button:hover { background: #0056b3; }
+    body { font-family: Arial, sans-serif; background: #111; color: #eee; text-align: center; }
+    h1 { color: #0ff; }
+    table { width: 95%; margin: 20px auto; border-collapse: collapse; background: #222; }
+    th, td { padding: 8px; border: 1px solid #444; text-align: center; }
+    th { background: #333; cursor: pointer; }
+    tr:nth-child(even) { background: #2a2a2a; }
+    button { padding: 10px 20px; margin: 10px; background: #0ff; border: none; cursor: pointer; border-radius: 5px; }
+    button:hover { background: #0cc; }
+    #progress { margin: 10px; color: #0f0; font-weight: bold; }
   </style>
 </head>
 <body>
-  <h2>hserus5</h2>
-  <button onclick="loadScanner()">🔄 Refresh</button>
-  <div id="progress">Progress: 0 / 250</div>
+  <h1>hserus5</h1>
+  <button onclick="runScanner()">🔄 Refresh</button>
+  <div id="progress">Idle</div>
+  
   <table id="scannerTable">
     <thead>
       <tr>
-        <th onclick="sortTable(0)">Symbol</th>
-        <th onclick="sortTable(1)">Close % (1h)</th>
-        <th onclick="sortTable(2)">Vol % (1h)</th>
-        <th onclick="sortTable(3)">Cycle %</th>
-        <th onclick="sortTable(4)">Curr FR</th>
-        <th onclick="sortTable(5)">Prev FR</th>
-        <th onclick="sortTable(6)">FR Δ%</th>
-        <th onclick="sortTable(7)">Cycle</th>
+        <th>Symbol</th>
+        <th onclick="sortTable(1)">Close % ⬍</th>
+        <th onclick="sortTable(2)">Volume % ⬍</th>
       </tr>
     </thead>
     <tbody></tbody>
   </table>
+  
+<script>
+const API = "https://fapi.binance.com";
 
-  <script>
-    const BASE_URL = "https://fapi.binance.com/fapi/v1";
-    const excludeSymbols = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","AVAXUSDT","DOGEUSDT","TRXUSDT","DOTUSDT",
-                            "LINKUSDT","MATICUSDT","SHIBUSDT","BCHUSDT","LTCUSDT","ICPUSDT","NEARUSDT","UNIUSDT","ETCUSDT","APTUSDT",
-                            "FILUSDT","OPUSDT","XLMUSDT","INJUSDT","SUIUSDT","IMXUSDT","ATOMUSDT","ARBUSDT","GRTUSDT","MKRUSDT"]; // top 30 mcap to exclude
+// --- Utility---
+function bollingerBands(values, period = 20, mult = 2) {
+  if (values.length < period) return null;
+  let slice = values.slice(-period);
+  let mean = slice.reduce((a, b) => a + b, 0) / period;
+  let variance = slice.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / period;
+  let stdDev = Math.sqrt(variance);
+  return {
+    middle: mean,
+    upper: mean + mult * stdDev,
+    lower: mean - mult * stdDev
+  };
+}
 
-    async function fetchJSON(url) {
-      const res = await fetch(url);
-      return res.json();
-    }
+// --- Main ---
+async function runScanner() {
+  document.getElementById("progress").innerText = "Fetching symbols...";
+  let symbols = await fetch(`${API}/fapi/v1/exchangeInfo`)
+    .then(r => r.json())
+    .then(d => d.symbols
+      .filter(s => s.symbol.endsWith("USDT") && s.contractType === "PERPETUAL")
+      .map(s => s.symbol)
+    );
 
-    async function loadScanner() {
-      document.querySelector("#progress").innerText = "Progress: 0 / 250";
-      const tbody = document.querySelector("#scannerTable tbody");
-      tbody.innerHTML = "";
+  // Limit to top 200 volatile (skip top 30 big cap manually)
+  // We proxy volatility by 24h quote volume
+  let tickers = await fetch(`${API}/fapi/v1/ticker/24hr`).then(r => r.json());
+  let sorted = tickers
+    .filter(t => symbols.includes(t.symbol))
+    .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
+    .slice(1, 201); // exclude top 30, take next 200
 
-      const exchangeInfo = await fetchJSON(`${BASE_URL}/exchangeInfo`);
-      let symbols = exchangeInfo.symbols.filter(s => s.contractType === "PERPETUAL" && s.symbol.endsWith("USDT"))
-                        .map(s => s.symbol);
+  let results = [];
+  let i = 0;
+  for (let t of sorted) {
+    i++;
+    document.getElementById("progress").innerText = `Scanning ${i}/${sorted.length} - ${t.symbol}`;
+    try {
+      let klines = await fetch(`${API}/fapi/v1/klines?symbol=${t.symbol}&interval=1h&limit=25`).then(r => r.json());
+      let closes = klines.map(k => parseFloat(k[4]));
+      let highs = klines.map(k => parseFloat(k[2]));
+      let lows = klines.map(k => parseFloat(k[3]));
+      let vols = klines.map(k => parseFloat(k[5]));
 
-      // Filter out excluded symbols
-      symbols = symbols.filter(sym => !excludeSymbols.includes(sym));
-      symbols = symbols.slice(0, 250);
+      let bb = bollingerBands(closes);
+      if (!bb) continue;
 
-      let count = 0;
-      for (let sym of symbols) {
-        count++;
-        document.querySelector("#progress").innerText = `Scanning: ${count} / ${symbols.length}`;
+      let n = closes.length;
+      let prevHigh = highs[n-2], prevLow = lows[n-2];
+      let prevClose = closes[n-2];
+      let curOpen = parseFloat(klines[n-1][1]);
+      let curClose = closes[n-1];
+      let curHigh = highs[n-1], curLow = lows[n-1];
+      let prevBB = bollingerBands(closes.slice(0, n-1));
 
-        try {
-          // kline for 1h
-          const klines = await fetchJSON(`${BASE_URL}/klines?symbol=${sym}&interval=1h&limit=2`);
-          const prev = klines[0], curr = klines[1];
-          const prevClose = parseFloat(prev[4]), currClose = parseFloat(curr[4]);
-          const prevVol = parseFloat(prev[5]), currVol = parseFloat(curr[5]);
+      let isGreen = curClose > curOpen;
+      let cond1 = false, cond2 = false;
 
-          const closeChg = ((currClose - prevClose) / prevClose * 100).toFixed(2);
-          const volChg = ((currVol - prevVol) / prevVol * 100).toFixed(2);
-
-          // Funding rates
-          const funding = await fetchJSON(`${BASE_URL}/fundingRate?symbol=${sym}&limit=2`);
-          if (funding.length < 2) continue;
-          const prevFR = parseFloat(funding[1].fundingRate) * 100;
-          const currFR = parseFloat(funding[0].fundingRate) * 100;
-
-          // Exclude 0.01% and 0.005%
-          if ([0.01, 0.005].includes(Math.abs(prevFR)) || [0.01, 0.005].includes(Math.abs(currFR))) continue;
-
-          if (prevFR === currFR) continue; // skip if same
-
-          const frDelta = (currFR - prevFR).toFixed(4);
-          const frDeltaPerc = prevFR !== 0 ? ((currFR - prevFR) / Math.abs(prevFR) * 100).toFixed(2) : "NA";
-          const cycle = "8h"; // Binance perpetual default
-
-          // Cycle % (since start of FR cycle)
-          const now = new Date();
-          const cycleStartHour = Math.floor(now.getUTCHours() / 8) * 8;
-          const cycleStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), cycleStartHour, 0, 0));
-          const klinesCycle = await fetchJSON(`${BASE_URL}/klines?symbol=${sym}&interval=1h&startTime=${cycleStart.getTime()}`);
-          if (!klinesCycle.length) continue;
-          const startClose = parseFloat(klinesCycle[0][4]);
-          const cycleCloseChg = ((currClose - startClose) / startClose * 100).toFixed(2);
-
-          // Add row
-          const row = `<tr>
-            <td>${sym}</td>
-            <td>${closeChg}</td>
-            <td>${volChg}</td>
-            <td>${cycleCloseChg}</td>
-            <td>${currFR.toFixed(4)}%</td>
-            <td>${prevFR.toFixed(4)}%</td>
-            <td>${frDeltaPerc}%</td>
-            <td>${cycle}</td>
-          </tr>`;
-          tbody.insertAdjacentHTML("beforeend", row);
-
-        } catch (err) {
-          console.error("Error for symbol", sym, err);
-        }
+      if (isGreen) {
+        cond1 = highs[n-2] < bb.upper && highs[n-3] < bb.upper;
+        cond2 = curHigh > prevBB.upper;
+      } else {
+        cond1 = lows[n-2] > bb.lower && lows[n-3] > bb.lower;
+        cond2 = curLow < prevBB.lower;
       }
-      document.querySelector("#progress").innerText = `Completed: ${symbols.length} symbols scanned`;
-    }
 
-    function sortTable(n) {
-      const table = document.getElementById("scannerTable");
-      let switching = true, dir = "asc", switchcount = 0;
-      while (switching) {
-        switching = false;
-        const rows = table.rows;
-        for (let i = 1; i < rows.length - 1; i++) {
-          let shouldSwitch = false;
-          let x = rows[i].getElementsByTagName("TD")[n];
-          let y = rows[i + 1].getElementsByTagName("TD")[n];
-          let cmpx = parseFloat(x.innerHTML) || x.innerHTML.toLowerCase();
-          let cmpy = parseFloat(y.innerHTML) || y.innerHTML.toLowerCase();
-          if (dir === "asc" && cmpx > cmpy) { shouldSwitch = true; break; }
-          if (dir === "desc" && cmpx < cmpy) { shouldSwitch = true; break; }
-        }
-        if (shouldSwitch) {
-          rows[i].parentNode.insertBefore(rows[i + 1], rows[i]);
-          switching = true; switchcount++;
-        } else {
-          if (switchcount === 0 && dir === "asc") { dir = "desc"; switching = true; }
-        }
+      if (cond1 && cond2) {
+        let closeChange = ((curClose - prevClose) / prevClose * 100).toFixed(2);
+        let volChange = ((vols[n-1] - vols[n-2]) / vols[n-2] * 100).toFixed(2);
+        results.push({symbol: t.symbol, closeChange, volChange});
       }
-    }
+    } catch(e) { console.error(t.symbol, e); }
+  }
 
-    loadScanner();
-  </script>
+  renderTable(results);
+  document.getElementById("progress").innerText = "Scan complete ✔";
+}
+
+// --- Render Table ---
+function renderTable(data) {
+  let tbody = document.querySelector("#scannerTable tbody");
+  tbody.innerHTML = "";
+  data.forEach(r => {
+    let row = `<tr>
+      <td>${r.symbol}</td>
+      <td>${r.closeChange}%</td>
+      <td>${r.volChange}%</td>
+    </tr>`;
+    tbody.innerHTML += row;
+  });
+}
+
+// --- Sorting ---
+function sortTable(colIndex) {
+  let table = document.getElementById("scannerTable");
+  let rows = Array.from(table.rows).slice(1);
+  let asc = table.getAttribute("data-sort") !== "asc";
+  rows.sort((a, b) => {
+    let x = parseFloat(a.cells[colIndex].innerText);
+    let y = parseFloat(b.cells[colIndex].innerText);
+    return asc ? x - y : y - x;
+  });
+  rows.forEach(r => table.tBodies[0].appendChild(r));
+  table.setAttribute("data-sort", asc ? "asc" : "desc");
+}
+</script>
 </body>
 </html>
