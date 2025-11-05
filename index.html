@@ -1,287 +1,135 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>hserus5</title>
 <style>
-  :root{
-    --bg:#06121a; --card:#08202a; --muted:#9fb6c7; --accent:#7be3c7; --danger:#ff8a8a; --text:#e6f3f6;
-  }
-  body{margin:0;font-family:Inter,Arial,Helvetica,sans-serif;background:linear-gradient(#031017,#07121a);color:var(--text);padding:16px}
-  header{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
-  h1{margin:0;font-size:18px}
-  .controls{display:flex;gap:8px;align-items:center}
-  button{padding:8px 12px;border-radius:8px;border:none;background:var(--accent);color:#012;cursor:pointer}
-  button[disabled]{opacity:0.5;cursor:not-allowed}
-  .small{font-size:13px;color:var(--muted)}
-  .progress{font-size:14px;color:var(--muted)}
-  #barwrap{width:100%;max-width:900px;margin-top:10px}
-  #bar{width:100%;height:8px;background:rgba(255,255,255,0.03);border-radius:8px;overflow:hidden}
-  #fill{height:100%;width:0%;background:linear-gradient(90deg,#7be3c7,#2bd18a)}
-  .tablewrap{margin-top:14px;overflow:auto;border-radius:8px}
-  table{width:100%;border-collapse:collapse;min-width:720px}
-  th,td{padding:8px;border-bottom:1px solid rgba(255,255,255,0.04);text-align:right}
-  th{background:rgba(255,255,255,0.02);cursor:pointer;color:var(--muted);position:sticky;top:0}
-  td.symbol{text-align:left;color:#7bdfff;font-weight:600}
-  .green{color:#7be3c7}
-  .red{color:var(--danger)}
-  .placeholder{color:var(--muted)}
-  @media(max-width:880px){th,td{padding:6px;font-size:12px}}
+  body { font-family: Arial, sans-serif; background: #0b0b0b; color: #e6e6e6; text-align: center; }
+  h2 { color: #00e676; }
+  button { background: #00e676; color: #000; border: none; padding: 10px 20px; margin: 10px; border-radius: 5px; cursor: pointer; font-weight: bold; }
+  button:hover { background: #00c853; }
+  #progress { margin: 10px; color: #ffeb3b; }
+  table { width: 95%; margin: 20px auto; border-collapse: collapse; background: #121212; }
+  th, td { padding: 10px; border: 1px solid #333; }
+  th { background: #1c1c1c; cursor: pointer; }
+  tr:nth-child(even) { background: #181818; }
 </style>
 </head>
 <body>
-  <header>
-    <div>
-      <h1>hserus5</h1>
-      <div class="small">hserus5</div>
-    </div>
-    <div class="controls">
-      <button id="refreshBtn">🔄 Refresh</button>
-      <div id="status" class="progress">Idle</div>
-    </div>
-  </header>
 
-  <div id="barwrap">
-    <div id="bar"><div id="fill"></div></div>
-  </div>
-
-  <div class="tablewrap" aria-live="polite">
-    <table id="resultsTable" role="table" aria-label="scanner results">
-      <thead>
-        <tr>
-          <th data-key="symbol">Symbol</th>
-          <th data-key="curr_pct">Curr%</th>
-          <th data-key="buy_sell">Buy/Sell</th>
-        </tr>
-      </thead>
-      <tbody id="tbody">
-        <tr><td colspan="3" class="placeholder">Click <strong>Refresh</strong> to start scan.</td></tr>
-      </tbody>
-    </table>
-  </div>
+<h2>hserus5</h2>
+<button onclick="fetchScanner()">🔄 Refresh</button>
+<div id="progress"></div>
+<table id="resultTable">
+  <thead>
+    <tr>
+      <th onclick="sortTable(0)">Symbol</th>
+      <th onclick="sortTable(1)">Close%</th>
+      <th onclick="sortTable(2)">Buy/Sell</th>
+    </tr>
+  </thead>
+  <tbody></tbody>
+</table>
 
 <script>
-/* Configuration */
-const BASE = 'https://fapi.binance.com';
-const MAX_SYMBOLS = 250;
-const CHUNK = 20;            // parallel symbols per batch (tune if you hit rate limits)
-const EXCLUDE_TOP = new Set([
-  "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","DOGEUSDT","MATICUSDT",
-  "LTCUSDT","AVAXUSDT","TRXUSDT","LINKUSDT","NEARUSDT","APTUSDT","SUIUSDT","SHIBUSDT",
-  "BCHUSDT","UNIUSDT","ATOMUSDT","FILUSDT","APEUSDT","TONUSDT","XMRUSDT","ALGOUSDT","FTMUSDT"
-]);
+let sortDirection = [true, true, true];
 
-/* DOM */
-const refreshBtn = document.getElementById('refreshBtn');
-const statusEl = document.getElementById('status');
-const tbody = document.getElementById('tbody');
-const fill = document.getElementById('fill');
+async function fetchScanner() {
+  const progress = document.getElementById('progress');
+  const tbody = document.querySelector('#resultTable tbody');
+  tbody.innerHTML = "";
+  progress.textContent = "⏳ Fetching top symbols...";
 
-/* Utilities */
-function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
-function safeNum(v){ const n = Number(v); return Number.isFinite(n)? n : null; }
-function fmtPct(v){ if(!isFinite(v)) return '—'; return (v>=0?'+':'') + Number(v).toFixed(2) + '%'; }
-function fmtRatio(b,s){ if(!isFinite(b) || !isFinite(s) || s===0) return '—'; return (b/s).toFixed(3); }
-function parseBuySellObj(obj){
-  // try to extract buy and sell volumes from returned object robustly
-  if(!obj || typeof obj !== 'object') return {buy:null,sell:null};
-  // common fields: buyVol, buyVolume, takerBuyVol, takerBuyVolume, buy, buyQty, sellVol...
-  const buyKeys = ['buyVol','buyVolume','takerBuyVol','takerBuyVolume','buy','buyQty','buyVolume(quote)'];
-  const sellKeys = ['sellVol','sellVolume','takerSellVol','takerSellVolume','sell','sellQty','sellVolume(quote)'];
-  for(const k of buyKeys){
-    if(k in obj && safeNum(obj[k]) !== null) { 
-      for(const sk of sellKeys) {
-        if(sk in obj && safeNum(obj[sk]) !== null) return { buy: safeNum(obj[k]), sell: safeNum(obj[sk]) };
-      }
-    }
-  }
-  // fallback: look for keys containing 'buy'/'sell'
-  let buy=null, sell=null;
-  for(const k of Object.keys(obj)){
-    const lk = k.toLowerCase();
-    if(lk.includes('buy') && buy===null) { const v = safeNum(obj[k]); if(v!==null) buy=v; }
-    if(lk.includes('sell') && sell===null) { const v = safeNum(obj[k]); if(v!==null) sell=v; }
-  }
-  return {buy, sell};
-}
-
-/* Step 1: fetch top volatile symbols (perpetual USDT) */
-async function getTopSymbols(limit=MAX_SYMBOLS){
-  statusEl.textContent = 'Fetching tickers...';
-  const [eiRes, tickRes] = await Promise.all([
-    fetch(`${BASE}/exchangeInfo`).then(r=>r.json()),
-    fetch(`${BASE}/ticker/24hr`).then(r=>r.json())
-  ]);
-  const perps = new Set((eiRes.symbols || []).filter(s => s.contractType === 'PERPETUAL' && s.symbol.endsWith('USDT')).map(s=>s.symbol));
-  const tickers = (tickRes || []).filter(t => perps.has(t.symbol));
-  // score by absolute price change % * quoteVolume (better proxy)
-  tickers.sort((a,b) => Math.abs(Number(b.priceChangePercent || 0))*Number(b.quoteVolume || 0) - Math.abs(Number(a.priceChangePercent || 0))*Number(a.quoteVolume || 0));
-  const filtered = tickers.map(t => t.symbol).filter(s => !EXCLUDE_TOP.has(s)).slice(0, limit);
-  return filtered;
-}
-
-/* fetch 1h klines (limit=2 for prev and curr) */
-async function fetchKlines(symbol, limit=2){
-  const url = `${BASE}/klines?symbol=${encodeURIComponent(symbol)}&interval=1h&limit=${limit}`;
-  const r = await fetch(url);
-  if(!r.ok) throw new Error('klines failed: ' + r.status);
-  return r.json();
-}
-
-/* fetch taker buy/sell vol (1h) - docs endpoint: /futures/data/takerBuySellVol */
-async function fetchTakerBuySell(symbol, period='1h', limit=1){
-  // try typical param name 'symbol' first; fallback to 'pair'
-  const urls = [
-    `${BASE}/futures/data/takerBuySellVol?symbol=${encodeURIComponent(symbol)}&period=${encodeURIComponent(period)}&limit=${limit}`,
-    `${BASE}/futures/data/takerBuySellVol?pair=${encodeURIComponent(symbol)}&period=${encodeURIComponent(period)}&limit=${limit}`
-  ];
-  for(const u of urls){
-    try {
-      const res = await fetch(u);
-      if(!res.ok) continue;
-      const arr = await res.json();
-      if(Array.isArray(arr) && arr.length>0) return arr[arr.length-1];
-      if(arr && typeof arr === 'object') return arr;
-    } catch(e){
-      // ignore and try next
-    }
-  }
-  throw new Error('takerBuySellVol no data');
-}
-
-/* Append live row */
-function appendRow(obj){
-  const tr = document.createElement('tr');
-  tr.innerHTML = `
-    <td class="symbol">${obj.symbol}</td>
-    <td class="${obj.curr_pct>=0? 'green':'red'}">${isFinite(obj.curr_pct)? fmtPct(obj.curr_pct) : '—'}</td>
-    <td>${isFinite(obj.buy)? (isFinite(obj.sell) ? fmtRatio(obj.buy, obj.sell) : '—') : '—'}</td>
-  `;
-  tbody.appendChild(tr);
-}
-
-/* Main scan flow (chunked & parallel) */
-async function startScan(){
   try {
-    refreshBtn.disabled = true;
-    tbody.innerHTML = `<tr><td colspan="3" class="placeholder">Preparing symbol list...</td></tr>`;
-    fill.style.width = '0%';
-    const symbols = await getTopSymbols(MAX_SYMBOLS);
-    if(!symbols || symbols.length===0){
-      tbody.innerHTML = `<tr><td colspan="3" class="placeholder">No symbols found.</td></tr>`;
-      statusEl.textContent = 'No symbols';
-      refreshBtn.disabled = false;
-      return;
-    }
-    tbody.innerHTML = '';
-    const total = symbols.length;
-    let matches = [];
-    for(let i=0;i<symbols.length;i+=CHUNK){
-      const batch = symbols.slice(i, i+CHUNK);
-      // fetch klines for batch in parallel
-      const kPromises = batch.map(s => fetchKlines(s, 2).then(k => ({symbol:s, kl:k})).catch(e=>({symbol:s, kl:null, err:e})));
-      const kResults = await Promise.all(kPromises);
+    // Step 1: Get top 250 USDT Perpetual symbols
+    const exInfo = await fetch("https://fapi.binance.com/fapi/v1/exchangeInfo").then(r => r.json());
+    let symbols = exInfo.symbols
+      .filter(s => s.symbol.endsWith("USDT") && s.contractType === "PERPETUAL")
+      .map(s => s.symbol)
+      .filter(s => !["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","DOTUSDT","LINKUSDT",
+                     "TRXUSDT","MATICUSDT","TONUSDT","LTCUSDT","BCHUSDT","SHIBUSDT","UNIUSDT","ETCUSDT","ICPUSDT","APTUSDT"]
+                     .includes(s))
+      .slice(0, 250);
 
-      // for symbols with valid klines, gather candidate list to fetch taker data
-      const candidates = [];
-      for(const res of kResults){
-        const sym = res.symbol;
-        if(!res.kl || !Array.isArray(res.kl) || res.kl.length < 2) continue;
-        const k = res.kl;
-        const prev = k[k.length-2];
-        const curr = k[k.length-1];
-        const prevClose = safeNum(prev[4]);
-        const currClose = safeNum(curr[4]);
-        const currOpen = safeNum(curr[1]);
-        if([prevClose,currClose,currOpen].some(v=>v===null)) continue;
-        const currPct = ((currClose - prevClose)/prevClose)*100;
-        const isGreen = currClose > currOpen;
-        // We'll need taker buy/sell to decide, so add to candidates
-        candidates.push({symbol:sym, currPct, isGreen});
-      }
+    progress.textContent = `📊 Scanning ${symbols.length} symbols...`;
 
-      // fetch taker buy/sell for candidates in parallel (but ensure we don't blast server)
-      const tPromises = candidates.map(c => fetchTakerBuySell(c.symbol, '1h', 1)
-        .then(obj => ({symbol:c.symbol, currPct:c.currPct, isGreen:c.isGreen, taker:obj}))
-        .catch(e => ({symbol:c.symbol, currPct:c.currPct, isGreen:c.isGreen, taker:null, err:e})));
-      const tResults = await Promise.all(tPromises);
+    let results = [];
 
-      // evaluate conditions and append matches (live)
-      for(const tr of tResults){
-        const {symbol,currPct,isGreen,taker} = tr;
-        if(!taker) continue;
-        const {buy, sell} = parseBuySellObj(taker);
-        if(!isFinite(buy) || !isFinite(sell)) continue;
-        // apply your rule:
-        // if current candle is green -> sellVolume > buyVolume
-        // if current candle is red  -> buyVolume > sellVolume
-        const cond = isGreen ? (sell > buy) : (buy > sell);
-        if(cond){
-          const obj = {symbol, curr_pct: currPct, buy, sell};
-          matches.push(obj);
-          appendRow(obj);
+    // Step 2: Loop through symbols
+    for (let i = 0; i < symbols.length; i++) {
+      const sym = symbols[i];
+      progress.textContent = `🔍 Processing ${sym} (${i+1}/${symbols.length})`;
+
+      try {
+        const data = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=1h&limit=3`).then(r => r.json());
+        if (!Array.isArray(data) || data.length < 3) continue;
+        const prev = data[data.length - 2];
+        const curr = data[data.length - 1];
+
+        const open = parseFloat(curr[1]);
+        const high = parseFloat(curr[2]);
+        const low = parseFloat(curr[3]);
+        const close = parseFloat(curr[4]);
+        const vol = parseFloat(curr[5]);
+        const prevVol = parseFloat(prev[5]);
+        const closeChange = ((close - open) / open) * 100;
+
+        const buyVol = ((close - low) / (high - low || 1)) * vol;
+        const sellVol = ((high - close) / (high - low || 1)) * vol;
+        const ratio = sellVol > 0 ? (buyVol / sellVol).toFixed(2) : "∞";
+
+        // Condition: if green, sellVol > buyVol; if red, buyVol > sellVol
+        const isGreen = close > open;
+        if ((isGreen && sellVol > buyVol) || (!isGreen && buyVol > sellVol)) {
+          results.push({
+            symbol: sym,
+            closePct: closeChange.toFixed(2),
+            ratio
+          });
         }
-      }
 
-      // update progress
-      const done = Math.min(i + CHUNK, total);
-      const pct = Math.round((done / total) * 100);
-      fill.style.width = pct + '%';
-      statusEl.textContent = `Scanning ${done} / ${total}`;
-      // small polite pause between batches
-      await sleep(120);
+      } catch (err) {
+        console.warn(`Error fetching ${sym}`, err);
+      }
     }
 
-    statusEl.textContent = `Scan complete — found ${matches.length} matches.`;
-    fill.style.width = '100%';
-  } catch(err){
-    console.error(err);
-    statusEl.textContent = 'Error: ' + (err.message || err);
-  } finally {
-    refreshBtn.disabled = false;
+    // Step 3: Show results
+    tbody.innerHTML = results.map(r =>
+      `<tr>
+        <td>${r.symbol}</td>
+        <td>${r.closePct}%</td>
+        <td>${r.ratio}</td>
+      </tr>`
+    ).join("");
+
+    progress.textContent = `✅ Scan complete. ${results.length} results found.`;
+
+  } catch (error) {
+    progress.textContent = "❌ Error fetching data. Please refresh.";
+    console.error(error);
   }
 }
 
-/* Sorting (toggle asc/desc per column) — robust numeric handling */
-function parseCellValue(s){
-  if(s === null || s === undefined) return NaN;
-  const t = String(s).replace(/[,%\+\s]/g,'');
-  const n = Number(t);
-  return Number.isFinite(n) ? n : NaN;
-}
-function sortTable(colIndex){
-  const table = document.getElementById('resultsTable');
-  const tbodyEl = table.tBodies[0];
-  const rows = Array.from(tbodyEl.querySelectorAll('tr'));
-  if(rows.length === 0) return;
-  table._sortState = table._sortState || {};
-  const key = 'c' + colIndex;
-  const dir = table._sortState[key] === 'asc' ? 'desc' : 'asc';
-  table._sortState[key] = dir;
-
-  rows.sort((a,b) => {
-    const aText = a.cells[colIndex] ? a.cells[colIndex].innerText.trim() : '';
-    const bText = b.cells[colIndex] ? b.cells[colIndex].innerText.trim() : '';
-    const aNum = parseCellValue(aText);
-    const bNum = parseCellValue(bText);
-    let cmp = 0;
-    if(!Number.isNaN(aNum) && !Number.isNaN(bNum)) cmp = aNum - bNum;
-    else cmp = aText.localeCompare(bText, undefined, {numeric:true, sensitivity:'base'});
-    return dir === 'asc' ? cmp : -cmp;
+// Sorting
+function sortTable(n) {
+  const table = document.getElementById("resultTable");
+  const tbody = table.tBodies[0];
+  const rows = Array.from(tbody.rows);
+  const asc = sortDirection[n];
+  rows.sort((a, b) => {
+    let x = a.cells[n].innerText.replace('%','');
+    let y = b.cells[n].innerText.replace('%','');
+    let nx = parseFloat(x) || x.toLowerCase();
+    let ny = parseFloat(y) || y.toLowerCase();
+    return asc ? nx > ny ? 1 : -1 : nx < ny ? 1 : -1;
   });
-
-  rows.forEach(r => tbodyEl.appendChild(r));
+  rows.forEach(row => tbody.appendChild(row));
+  sortDirection[n] = !asc;
 }
 
-/* Wire up */
-refreshBtn.addEventListener('click', () => {
-  tbody.innerHTML = `<tr><td colspan="3" class="placeholder">Starting scan...</td></tr>`;
-  startScan();
-});
-document.querySelectorAll('#resultsTable thead th').forEach((th, idx) => {
-  th.addEventListener('click', () => sortTable(idx));
-});
+fetchScanner();
 </script>
+
 </body>
 </html>
