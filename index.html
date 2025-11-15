@@ -78,6 +78,8 @@ async function scanSymbol(symbol){
 
         const o = Number(cur[1]);
         const c = Number(cur[4]);
+        const h = Number(cur[2]);
+        const l = Number(cur[3]);
         const v = Number(cur[5]);
 
         let midFlip = "No";
@@ -96,7 +98,7 @@ async function scanSymbol(symbol){
         const curColor = candleColor(o,c);
 
         // Conditions
-        if(v <= pv * 1.6) return null;
+        if(v <= pv * 1.5) return null;
         if(curColor === "green" && !(o < mids)) return null;
         if(curColor === "red"   && !(o > mids)) return null;
 
@@ -174,3 +176,4 @@ async function startScan(){
 </script>
 </body>
 </html>
+
