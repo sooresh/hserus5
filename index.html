@@ -1,167 +1,258 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<title>hserus5</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-body{margin:0;background:#07121a;color:#e6f3f6;font-family:Arial;padding:16px}
-h1{font-size:18px;margin:0}
-.controls{display:flex;gap:10px;align-items:center;margin-top:8px}
-button{padding:8px 14px;border:none;border-radius:6px;background:#7be3c7;color:#022;cursor:pointer}
-button:disabled{opacity:.5}
-.small{font-size:13px;color:#9fb6c7}
-#bar{height:10px;background:#122;border-radius:6px;overflow:hidden;margin-top:12px}
-#fill{height:100%;width:0%;background:linear-gradient(90deg,#7be3c7,#2bd18a)}
-table{width:100%;border-collapse:collapse;margin-top:14px;background:#0b2230}
-th,td{padding:9px;border-bottom:1px solid #123;text-align:right}
-th{cursor:pointer;color:#9fb6c7}
-td.symbol{text-align:left;color:#7bdfff;font-weight:bold}
-.green{color:#7be3c7}
-.red{color:#ff6b6b}
-</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>hserus5</title>
+    <style>
+        :root {
+            --bg: #121212;
+            --card: #1e1e1e;
+            --text: #e0e0e0;
+            --muted: #888;
+            --accent: #f0b90b; /* Binance Yellow */
+            --green: #00ff88;
+            --red: #ff4444;
+            --border: #333;
+        }
+
+        body {
+            font-family: 'Inter', system-ui, sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            margin: 0;
+            padding: 20px;
+        }
+
+        .container { max-width: 1200px; margin: 0 auto; }
+
+        /* UI Controls */
+        .controls {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            background: var(--card);
+            padding: 20px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            border: 1px solid var(--border);
+        }
+
+        button {
+            background: var(--accent);
+            color: #000;
+            border: none;
+            padding: 10px 24px;
+            border-radius: 6px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        button:hover { opacity: 0.9; }
+        button:disabled { background: var(--muted); cursor: not-allowed; }
+
+        /* Progress Bar */
+        .progress-container { flex-grow: 1; }
+        .progress-text { font-size: 12px; color: var(--muted); margin-bottom: 5px; text-align: right; }
+        .progress-bg { background: #333; height: 8px; border-radius: 4px; overflow: hidden; }
+        .progress-fill { background: var(--accent); width: 0%; height: 100%; transition: width 0.3s ease; }
+
+        /* Table Styles */
+        .table-wrap {
+            background: var(--card);
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            overflow: hidden;
+        }
+        table { width: 100%; border-collapse: collapse; text-align: left; }
+        th { 
+            background: #252525; 
+            padding: 15px; 
+            font-size: 13px; 
+            text-transform: uppercase; 
+            color: var(--muted);
+            cursor: pointer;
+            user-select: none;
+        }
+        th:hover { color: #fff; background: #2a2a2a; }
+        td { padding: 15px; border-top: 1px solid var(--border); font-size: 14px; }
+        
+        /* Utility */
+        .green { color: var(--green); }
+        .red { color: var(--red); }
+        .symbol { font-weight: 700; color: #fff; }
+        .sort-icon { font-size: 10px; margin-left: 5px; }
+    </style>
 </head>
 <body>
 
-<h1>hserus5</h1>
+<div class="container">
+    <div class="controls">
+        <button id="refreshBtn">REFRESH SCAN</button>
+        <div class="progress-container">
+            <div class="progress-text" id="statusMsg">Ready to scan...</div>
+            <div class="progress-bg"><div class="progress-fill" id="progBar"></div></div>
+        </div>
+    </div>
 
-<div class="controls">
-  <button id="refresh">Refresh</button>
-  <div id="status" class="small">Idle</div>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th onclick="sortTable(0, 'string')">Symbol <span class="sort-icon">▲▼</span></th>
+                    <th onclick="sortTable(1, 'number')">Price Chg % <span class="sort-icon">▲▼</span></th>
+                    <th onclick="sortTable(2, 'number')">Vol Chg % <span class="sort-icon">▲▼</span></th>
+                    <th onclick="sortTable(3, 'number')">Max Chg % <span class="sort-icon">▲▼</span></th>
+                    <th onclick="sortTable(4, 'number')">Body Ratio <span class="sort-icon">▲▼</span></th>
+                </tr>
+            </thead>
+            <tbody id="resTable">
+                <tr><td colspan="5" style="text-align:center; color:var(--muted)">Click Refresh to start scanning...</td></tr>
+            </tbody>
+        </table>
+    </div>
 </div>
 
-<div id="bar"><div id="fill"></div></div>
-
-<table>
-<thead>
-<tr>
-  <th>Symbol</th>
-  <th>Close%</th>
-  <th>Vol%</th>
-  <th>Max%</th>
-  <th>Body%</th>
-</tr>
-</thead>
-<tbody id="body">
-<tr><td colspan="5" class="small">Click Refresh</td></tr>
-</tbody>
-</table>
-
 <script>
-const BASE = 'https://fapi.binance.com';
-const BATCH = 5;
-const MAX = 250;
+    const API = "https://fapi.binance.com/fapi/v1";
+    // Exclude top market cap/global majors as requested
+    const EXCLUDE = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "TRXUSDT", "LINKUSDT", "DOTUSDT", "MATICUSDT", "POLUSDT", "LTCUSDT", "AVAXUSDT"];
+    const BATCH_SIZE = 5;
 
-const EXCLUDE = new Set([
-"BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","DOGEUSDT","AVAXUSDT",
-"DOTUSDT","TRXUSDT","LINKUSDT","LTCUSDT","BCHUSDT","ATOMUSDT","FILUSDT","APTUSDT","SUIUSDT"
-]);
+    const refreshBtn = document.getElementById('refreshBtn');
+    const statusMsg = document.getElementById('statusMsg');
+    const progBar = document.getElementById('progBar');
+    const resTable = document.getElementById('resTable');
 
-const bodyEl = document.getElementById('body');
-const fill = document.getElementById('fill');
-const status = document.getElementById('status');
-const btn = document.getElementById('refresh');
+    async function getVolatileSymbols() {
+        const res = await fetch(`${API}/ticker/24hr`);
+        const data = await res.json();
+        
+        return data
+            .filter(t => t.symbol.endsWith("USDT") && !EXCLUDE.includes(t.symbol))
+            .map(t => ({
+                symbol: t.symbol,
+                volatility: (parseFloat(t.highPrice) - parseFloat(t.lowPrice)) / parseFloat(t.lowPrice)
+            }))
+            .sort((a, b) => b.volatility - a.volatility)
+            .slice(0, 250)
+            .map(t => t.symbol);
+    }
 
-const pct = (a,b)=>((a-b)/b)*100;
-const color = (o,c)=>c>o?'green':c<o?'red':'doji';
+    async function scanSymbol(symbol) {
+        try {
+            const res = await fetch(`${API}/klines?symbol=${symbol}&interval=1h&limit=3`);
+            const klines = await res.json();
+            if (klines.length < 3) return null;
 
-async function j(u){const r=await fetch(u);if(!r.ok)throw 0;return r.json();}
+            // Extract candle data [Time, Open, High, Low, Close, Vol]
+            const curr = { O: +klines[2][1], H: +klines[2][2], L: +klines[2][3], C: +klines[2][4], V: +klines[2][5] };
+            const prev = { O: +klines[1][1], H: +klines[1][2], L: +klines[1][3], C: +klines[1][4], V: +klines[1][5] };
+            const pprev = { V: +klines[0][5] };
 
-async function symbols(){
-  const [ei,t] = await Promise.all([
-    j(BASE+'/exchangeInfo'),
-    j(BASE+'/ticker/24hr')
-  ]);
-  const perp = new Set(
-    ei.symbols.filter(s=>s.contractType==='PERPETUAL' && s.symbol.endsWith('USDT')).map(s=>s.symbol)
-  );
-  return t
-    .filter(x=>perp.has(x.symbol) && !EXCLUDE.has(x.symbol))
-    .map(x=>({s:x.symbol,score:Math.abs(x.priceChangePercent)*x.quoteVolume}))
-    .sort((a,b)=>b.score-a.score)
-    .slice(0,MAX)
-    .map(x=>x.s);
-}
+            const isGreen = curr.C > curr.O;
+            const isPrevGreen = prev.C > prev.O;
 
-async function klines(s){return j(`${BASE}/klines?symbol=${s}&interval=1h&limit=3`);}
+            // (1) Color same
+            if (isGreen !== isPrevGreen) return null;
 
-async function scan(){
-  btn.disabled=true;
-  bodyEl.innerHTML='';
-  fill.style.width='0%';
-  status.textContent='Fetching symbols…';
+            // (2) Prev Vol > Prev Prev Vol
+            if (prev.V <= pprev.V) return null;
 
-  const syms = await symbols();
-  let done=0;
+            // (3) Curr Vol > Prev Vol * 0.6
+            if (curr.V <= prev.V * 0.6) return null;
 
-  for(let i=0;i<syms.length;i+=BATCH){
-    const batch = syms.slice(i,i+BATCH);
+            // Wick and Body Math
+            const upperWick = curr.H - Math.max(curr.O, curr.C);
+            const lowerWick = Math.min(curr.O, curr.C) - curr.L;
+            const body = Math.abs(curr.C - curr.O);
+            const dominantWick = isGreen ? lowerWick : upperWick;
 
-    const res = await Promise.all(batch.map(async s=>{
-      try{
-        const k = await klines(s);
-        const p2=k[0], p1=k[1], c=k[2];
+            // (4) Wick Logic
+            if (isGreen) {
+                if (lowerWick <= upperWick || body <= lowerWick * 0.8) return null;
+            } else {
+                if (upperWick <= lowerWick || body <= upperWick * 0.8) return null;
+            }
 
-        if(color(c[1],c[4])!==color(p1[1],p1[4])) return;
-        if(+p1[5] <= +p2[5]) return;
-        if(+c[5] <= +p1[5]*0.6) return;
+            // Formatting Frontend Data
+            const currChg = ((curr.C - curr.O) / curr.O) * 100;
+            const prevChg = ((prev.C - prev.O) / prev.O) * 100;
+            const volChg = ((curr.V - prev.V) / prev.V) * 100;
+            const maxChg = Math.max(Math.abs(currChg), Math.abs(prevChg));
+            const bodyRatio = dominantWick === 0 ? 0 : (body / dominantWick) * 100;
 
-        const o=+c[1], h=+c[2], l=+c[3], cl=+c[4];
-        const body=Math.abs(cl-o);
-        const uw=h-Math.max(o,cl);
-        const lw=Math.min(o,cl)-l;
+            return { symbol, currChg, volChg, maxChg, bodyRatio };
+        } catch (e) { return null; }
+    }
 
-        if(cl>o){
-          if(lw<=uw || body<=lw*0.8) return;
-        }else{
-          if(uw<=lw || body<=uw*0.8) return;
+    async function run() {
+        refreshBtn.disabled = true;
+        resTable.innerHTML = '';
+        let found = [];
+        
+        statusMsg.innerText = "Finding top 250 volatile assets...";
+        const symbols = await getVolatileSymbols();
+        
+        for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
+            const batch = symbols.slice(i, i + BATCH_SIZE);
+            const progress = Math.round((i / symbols.length) * 100);
+            
+            statusMsg.innerText = `Scanning: ${i}/${symbols.length} symbols...`;
+            progBar.style.width = `${progress}%`;
+
+            const results = await Promise.all(batch.map(s => scanSymbol(s)));
+            results.forEach(r => { if(r) found.push(r); });
+            
+            // UI Update as we find matches
+            if (found.length > 0) render(found);
+            await new Promise(r => setTimeout(r, 50)); // Tiny pause for API safety
         }
 
-        const cp=pct(cl,o);
-        const pp=pct(+p1[4],+p1[1]);
-        const vp=pct(+c[5],+p1[5]);
-        const wick = cl>o?lw:uw;
+        progBar.style.width = "100%";
+        statusMsg.innerText = `Scan Complete. Found ${found.length} matches.`;
+        refreshBtn.disabled = false;
+        if (found.length === 0) {
+            resTable.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--muted)">No matches found this hour.</td></tr>';
+        }
+    }
 
-        return {s,cp,vp,mp:Math.max(Math.abs(cp),Math.abs(pp)),bp:(body/wick)*100};
-      }catch{return;}
-    }));
+    function render(data) {
+        resTable.innerHTML = data.map(r => `
+            <tr>
+                <td class="symbol">${r.symbol}</td>
+                <td class="${r.currChg >= 0 ? 'green' : 'red'}">${r.currChg.toFixed(2)}%</td>
+                <td>${r.volChg.toFixed(0)}%</td>
+                <td>${r.maxChg.toFixed(2)}%</td>
+                <td>${r.bodyRatio.toFixed(0)}%</td>
+            </tr>
+        `).join('');
+    }
 
-    res.filter(Boolean).forEach(o=>{
-      const tr=document.createElement('tr');
-      tr.innerHTML=`
-        <td class="symbol">${o.s}</td>
-        <td class="${o.cp>=0?'green':'red'}">${o.cp.toFixed(2)}%</td>
-        <td>${o.vp.toFixed(2)}%</td>
-        <td>${o.mp.toFixed(2)}%</td>
-        <td>${o.bp.toFixed(0)}%</td>`;
-      bodyEl.appendChild(tr);
-    });
+    // Standard Multi-type Sort Function
+    let sortDir = {};
+    function sortTable(n, type) {
+        const rows = Array.from(resTable.querySelectorAll('tr'));
+        sortDir[n] = !sortDir[n];
+        
+        rows.sort((a, b) => {
+            let x = a.getElementsByTagName("TD")[n].innerText;
+            let y = b.getElementsByTagName("TD")[n].innerText;
+            
+            if (type === 'number') {
+                x = parseFloat(x.replace('%', ''));
+                y = parseFloat(y.replace('%', ''));
+                return sortDir[n] ? x - y : y - x;
+            }
+            return sortDir[n] ? x.localeCompare(y) : y.localeCompare(x);
+        });
+        
+        resTable.innerHTML = "";
+        rows.forEach(row => resTable.appendChild(row));
+    }
 
-    done+=batch.length;
-    fill.style.width=(done/syms.length*100)+'%';
-    status.textContent=`Scanning ${done}/${syms.length}`;
-    await new Promise(r=>setTimeout(r,120));
-  }
-
-  status.textContent='Scan complete';
-  btn.disabled=false;
-}
-
-btn.onclick=scan;
-
-/* sorting */
-document.querySelectorAll('th').forEach((th,i)=>{
-  th.onclick=()=>{
-    const rows=[...bodyEl.rows];
-    const asc=th.asc=!th.asc;
-    rows.sort((a,b)=>{
-      const x=parseFloat(a.cells[i].innerText)||0;
-      const y=parseFloat(b.cells[i].innerText)||0;
-      return asc?x-y:y-x;
-    });
-    rows.forEach(r=>bodyEl.appendChild(r));
-  };
-});
+    refreshBtn.addEventListener('click', run);
 </script>
+
 </body>
 </html>
