@@ -33,7 +33,7 @@
             padding: 24px;
             border-radius: 8px;
             width: 100%;
-            max-width: 1200px;
+            max-width: 1300px;
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
         }
 
@@ -170,7 +170,7 @@
 <div class="container">
     <div class="header-title">
         <h1>hserus5</h1>
-        <span class="badge">• 1H</span>
+        <span class="badge">1H</span>
     </div>
     
     <div class="controls">
@@ -192,11 +192,12 @@
                     <th class="sortable" onclick="sortTable('prev_price_chg')">Prev Price Chg (%) <span class="sort-icon" id="icon_prev_price_chg">↕</span></th>
                     <th class="sortable" onclick="sortTable('curr_vol_chg')">Current Vol Chg (%) <span class="sort-icon" id="icon_curr_vol_chg">↕</span></th>
                     <th class="sortable" onclick="sortTable('prev_vol_chg')">Prev Vol Chg (%) <span class="sort-icon" id="icon_prev_vol_chg">↕</span></th>
-                    <th class="sortable" onclick="sortTable('oi_chg')">Current Open Interest Chg (%) <span class="sort-icon" id="icon_oi_chg">↕</span></th>
+                    <th class="sortable" onclick="sortTable('curr_oi_chg')">Current OI Chg (%) <span class="sort-icon" id="icon_curr_oi_chg">↕</span></th>
+                    <th class="sortable" onclick="sortTable('prev_oi_chg')">Prev OI Chg (%) <span class="sort-icon" id="icon_prev_oi_chg">↕</span></th>
                 </tr>
             </thead>
             <tbody id="tableBody">
-                <tr><td colspan="6" class="empty-state">No scan completed yet.</td></tr>
+                <tr><td colspan="7" class="empty-state">No scan completed yet.</td></tr>
             </tbody>
         </table>
     </div>
@@ -271,12 +272,12 @@
 
     async function scanSingleSymbol(symbol) {
         try {
-            // Fetch 7 candles: [curr (-1), prev (-2), prev2 (-3), prev3 (-4), prev4 (-5), prev5 (-6), prev6 (-7)]
+            // Fetch 7 candles for price & volume calculations
             const klinesPromise = fetch(`${API_BASE}/fapi/v1/klines?symbol=${symbol}&interval=${TIMEFRAME}&limit=7`)
                 .then(r => r.ok ? r.json() : null);
             
-            // Fetch Open Interest history (last 2 hours to calculate 1h change)
-            const oiPromise = fetch(`${API_BASE}/futures/data/openInterestHist?symbol=${symbol}&period=${TIMEFRAME}&limit=2`)
+            // Fetch Open Interest history (limit 3 to calculate both current & previous 1h % changes)
+            const oiPromise = fetch(`${API_BASE}/futures/data/openInterestHist?symbol=${symbol}&period=${TIMEFRAME}&limit=3`)
                 .then(r => r.ok ? r.json() : null);
 
             const [klines, oiData] = await Promise.all([klinesPromise, oiPromise]);
@@ -292,12 +293,10 @@
             const prev_open = parseFloat(prev[1]), prev_close = parseFloat(prev[4]), prev_vol = parseFloat(prev[5]);
             const prev_prev_vol = parseFloat(prev_prev[5]);
 
-            // Historical candles for volume checks:
-            // 4 candles before curr (-1) are indices [-5, -4, -3, -2]
+            // Historical candles for volume checks
             const curr_last4_vols = klines.slice(klines.length - 5, klines.length - 1).map(c => parseFloat(c[5]));
             const max_vol_before_curr = Math.max(...curr_last4_vols);
 
-            // 4 candles before prev (-2) are indices [-6, -5, -4, -3]
             const prev_last4_vols = klines.slice(klines.length - 6, klines.length - 2).map(c => parseFloat(c[5]));
             const max_vol_before_prev = Math.max(...prev_last4_vols);
 
@@ -306,7 +305,7 @@
             const cond1_prev = prev_vol > max_vol_before_prev;
 
             if (!cond1_curr && !cond1_prev) {
-                return null; // Stop if Condition 1 fails
+                return null;
             }
 
             // --- CONDITION 2: Current candle and previous candle have the SAME color ---
@@ -314,7 +313,7 @@
             const prev_is_green = prev_close >= prev_open;
 
             if (curr_is_green !== prev_is_green) {
-                return null; // Stop if Condition 2 fails
+                return null;
             }
 
             // --- CALCULATIONS FOR DASHBOARD ---
@@ -324,13 +323,20 @@
             const curr_vol_chg = prev_vol > 0 ? ((curr_vol - prev_vol) / prev_vol) * 100 : 0;
             const prev_vol_chg = prev_prev_vol > 0 ? ((prev_vol - prev_prev_vol) / prev_prev_vol) * 100 : 0;
 
-            // Open Interest % Change
-            let oi_chg = 0;
-            if (Array.isArray(oiData) && oiData.length >= 2) {
-                const latestOI = parseFloat(oiData[oiData.length - 1].sumOpenInterest);
-                const prevOI = parseFloat(oiData[oiData.length - 2].sumOpenInterest);
+            // Open Interest % Changes Calculation
+            let curr_oi_chg = 0;
+            let prev_oi_chg = 0;
+            
+            if (Array.isArray(oiData) && oiData.length >= 3) {
+                const latestOI = parseFloat(oiData[2].sumOpenInterest);
+                const prevOI = parseFloat(oiData[1].sumOpenInterest);
+                const prevPrevOI = parseFloat(oiData[0].sumOpenInterest);
+                
                 if (prevOI > 0) {
-                    oi_chg = ((latestOI - prevOI) / prevOI) * 100;
+                    curr_oi_chg = ((latestOI - prevOI) / prevOI) * 100;
+                }
+                if (prevPrevOI > 0) {
+                    prev_oi_chg = ((prevOI - prevPrevOI) / prevPrevOI) * 100;
                 }
             }
 
@@ -340,7 +346,8 @@
                 prev_price_chg,
                 curr_vol_chg,
                 prev_vol_chg,
-                oi_chg
+                curr_oi_chg,
+                prev_oi_chg
             };
 
         } catch (e) {
@@ -375,7 +382,7 @@
         tableBody.innerHTML = '';
         
         if (scanResults.length === 0) {
-            tableBody.innerHTML = `<tr><td colspan="6" class="empty-state">No matching patterns found.</td></tr>`;
+            tableBody.innerHTML = `<tr><td colspan="7" class="empty-state">No matching patterns found.</td></tr>`;
             return;
         }
 
@@ -394,7 +401,8 @@
                 <td>${formatPct(row.prev_price_chg)}</td>
                 <td>${formatPct(row.curr_vol_chg)}</td>
                 <td>${formatPct(row.prev_vol_chg)}</td>
-                <td>${formatPct(row.oi_chg)}</td>
+                <td>${formatPct(row.curr_oi_chg)}</td>
+                <td>${formatPct(row.prev_oi_chg)}</td>
             `;
             tableBody.appendChild(tr);
         });
