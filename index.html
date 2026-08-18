@@ -33,7 +33,7 @@
             padding: 24px;
             border-radius: 8px;
             width: 100%;
-            max-width: 1300px;
+            max-width: 1050px;
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
         }
 
@@ -170,7 +170,7 @@
 <div class="container">
     <div class="header-title">
         <h1>hserus5</h1>
-        <span class="badge">1H</span>
+        <span class="badge">• 1H</span>
     </div>
     
     <div class="controls">
@@ -188,16 +188,14 @@
             <thead>
                 <tr>
                     <th>Symbol</th>
-                    <th class="sortable" onclick="sortTable('curr_price_chg')">Current Price Chg (%) <span class="sort-icon" id="icon_curr_price_chg">↕</span></th>
-                    <th class="sortable" onclick="sortTable('prev_price_chg')">Prev Price Chg (%) <span class="sort-icon" id="icon_prev_price_chg">↕</span></th>
-                    <th class="sortable" onclick="sortTable('curr_vol_chg')">Current Vol Chg (%) <span class="sort-icon" id="icon_curr_vol_chg">↕</span></th>
-                    <th class="sortable" onclick="sortTable('prev_vol_chg')">Prev Vol Chg (%) <span class="sort-icon" id="icon_prev_vol_chg">↕</span></th>
-                    <th class="sortable" onclick="sortTable('curr_oi_chg')">Current OI Chg (%) <span class="sort-icon" id="icon_curr_oi_chg">↕</span></th>
-                    <th class="sortable" onclick="sortTable('prev_oi_chg')">Prev OI Chg (%) <span class="sort-icon" id="icon_prev_oi_chg">↕</span></th>
+                    <th class="sortable" onclick="sortTable('curr_price_chg')">Curr Price % <span class="sort-icon" id="icon_curr_price_chg">↕</span></th>
+                    <th class="sortable" onclick="sortTable('prev_price_chg')">Prev Price % <span class="sort-icon" id="icon_prev_price_chg">↕</span></th>
+                    <th class="sortable" onclick="sortTable('curr_vol_chg')">Curr Vol % <span class="sort-icon" id="icon_curr_vol_chg">↕</span></th>
+                    <th class="sortable" onclick="sortTable('prev_vol_chg')">Prev Vol % <span class="sort-icon" id="icon_prev_vol_chg">↕</span></th>
                 </tr>
             </thead>
             <tbody id="tableBody">
-                <tr><td colspan="7" class="empty-state">No scan completed yet.</td></tr>
+                <tr><td colspan="5" class="empty-state">No scan completed yet.</td></tr>
             </tbody>
         </table>
     </div>
@@ -210,7 +208,7 @@
     const BATCH_SIZE = 10;
     
     let scanResults = [];
-    let currentSortColumn = 'curr_vol_chg';
+    let currentSortColumn = 'curr_price_chg';
     let isSortDescending = true;
 
     const startBtn = document.getElementById('startBtn');
@@ -225,12 +223,12 @@
         progressBar.style.width = '0%';
         
         try {
-            // 1. Get top 250 active USDT Perpetuals ranked by 24h USDT volume
+            // 1. Fetch top active USDT Perpetuals ranked by 24h volume
             progressText.innerText = "Fetching active USDT Perpetual pairs from Binance...";
             const tickerRes = await fetch(`${API_BASE}/fapi/v1/ticker/24hr`);
             const tickerData = await tickerRes.json();
             
-            // Filter strictly for USDT Perpetual contracts (excludes delivery futures with '_')
+            // Filter strictly for USDT Perpetual contracts
             const symbols = tickerData
                 .filter(item => item.symbol.endsWith('USDT') && !item.symbol.includes('_'))
                 .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
@@ -255,7 +253,7 @@
                 progressText.innerText = `Scanning: ${completed} / ${symbols.length} (${percentage}%)`;
                 progressBar.style.width = `${percentage}%`;
                 
-                // Small rate-limit safety buffer
+                // Rate-limit safety pause
                 await new Promise(resolve => setTimeout(resolve, 80));
             }
             
@@ -272,82 +270,75 @@
 
     async function scanSingleSymbol(symbol) {
         try {
-            // Fetch 7 candles for price & volume calculations
-            const klinesPromise = fetch(`${API_BASE}/fapi/v1/klines?symbol=${symbol}&interval=${TIMEFRAME}&limit=7`)
-                .then(r => r.ok ? r.json() : null);
+            // Fetch last 6 candles for color checks and volume comparisons
+            const res = await fetch(`${API_BASE}/fapi/v1/klines?symbol=${symbol}&interval=${TIMEFRAME}&limit=6`);
+            if (!res.ok) return null;
+            const klines = await res.json();
             
-            // Fetch Open Interest history (limit 3 to calculate both current & previous 1h % changes)
-            const oiPromise = fetch(`${API_BASE}/futures/data/openInterestHist?symbol=${symbol}&period=${TIMEFRAME}&limit=3`)
-                .then(r => r.ok ? r.json() : null);
-
-            const [klines, oiData] = await Promise.all([klinesPromise, oiPromise]);
-            
-            if (!Array.isArray(klines) || klines.length < 7) return null;
+            if (!Array.isArray(klines) || klines.length < 5) return null;
 
             // Structure: [OpenTime, Open, High, Low, Close, Volume, ...]
-            const curr = klines[klines.length - 1];
-            const prev = klines[klines.length - 2];
-            const prev_prev = klines[klines.length - 3];
+            const len = klines.length;
+            const curr = klines[len - 1];         // Candle 0
+            const prev = klines[len - 2];         // Candle -1
+            const prev_prev = klines[len - 3];    // Candle -2
+            const prev3 = klines[len - 4];        // Candle -3
+            const prev4 = klines[len - 5];        // Candle -4 (used for prev_vol_chg)
 
-            const curr_open = parseFloat(curr[1]), curr_close = parseFloat(curr[4]), curr_vol = parseFloat(curr[5]);
-            const prev_open = parseFloat(prev[1]), prev_close = parseFloat(prev[4]), prev_vol = parseFloat(prev[5]);
+            // Volumes
+            const curr_vol = parseFloat(curr[5]);
+            const prev_vol = parseFloat(prev[5]);
             const prev_prev_vol = parseFloat(prev_prev[5]);
+            const prev3_vol = parseFloat(prev3[5]);
+            const prev4_vol = parseFloat(prev4[5]);
 
-            // Historical candles for volume checks
-            const curr_last4_vols = klines.slice(klines.length - 5, klines.length - 1).map(c => parseFloat(c[5]));
-            const max_vol_before_curr = Math.max(...curr_last4_vols);
-
-            const prev_last4_vols = klines.slice(klines.length - 6, klines.length - 2).map(c => parseFloat(c[5]));
-            const max_vol_before_prev = Math.max(...prev_last4_vols);
-
-            // --- CONDITION 1: Either current vol > max(last 4) OR prev vol > max(last 4) ---
-            const cond1_curr = curr_vol > max_vol_before_curr;
-            const cond1_prev = prev_vol > max_vol_before_prev;
-
-            if (!cond1_curr && !cond1_prev) {
+            // --- CONDITION 1: Current candle volume is max of last 3 candles ---
+            if (curr_vol <= prev_vol || curr_vol <= prev_prev_vol) {
                 return null;
             }
 
-            // --- CONDITION 2: Current candle and previous candle have the SAME color ---
-            const curr_is_green = curr_close >= curr_open;
-            const prev_is_green = prev_close >= prev_open;
+            // Colors (true = Green [Close >= Open], false = Red [Close < Open])
+            const curr_color = parseFloat(curr[4]) >= parseFloat(curr[1]);
+            const prev_color = parseFloat(prev[4]) >= parseFloat(prev[1]);
+            const prev_prev_color = parseFloat(prev_prev[4]) >= parseFloat(prev_prev[1]);
+            const prev3_color = parseFloat(prev3[4]) >= parseFloat(prev3[1]);
 
-            if (curr_is_green !== prev_is_green) {
+            // --- CONDITION 2: Colour of current candle and prev candle is same ---
+            if (curr_color !== prev_color) {
                 return null;
             }
 
-            // --- CALCULATIONS FOR DASHBOARD ---
+            // --- CONDITION 3: Colour of prev, prev_prev, and prev3 candles is same ---
+            if (prev_color === prev_prev_color && prev_prev_color === prev3_color) {
+                // If prev, prev_prev, and prev3 are ALL same, then prev and prev_prev are same color, which fails Condition 4.
+                return null;
+            }
+            
+            if (!(prev_prev_color === prev3_color)) {
+                return null;
+            }
+
+            // --- CONDITION 4: Colour of prev and prev_prev candles are different ---
+            if (prev_color === prev_prev_color) {
+                return null;
+            }
+
+            // --- DASHBOARD CALCULATIONS ---
+            const curr_open = parseFloat(curr[1]), curr_close = parseFloat(curr[4]);
+            const prev_open = parseFloat(prev[1]), prev_close = parseFloat(prev[4]);
+
             const curr_price_chg = ((curr_close - curr_open) / curr_open) * 100;
             const prev_price_chg = ((prev_close - prev_open) / prev_open) * 100;
 
             const curr_vol_chg = prev_vol > 0 ? ((curr_vol - prev_vol) / prev_vol) * 100 : 0;
             const prev_vol_chg = prev_prev_vol > 0 ? ((prev_vol - prev_prev_vol) / prev_prev_vol) * 100 : 0;
 
-            // Open Interest % Changes Calculation
-            let curr_oi_chg = 0;
-            let prev_oi_chg = 0;
-            
-            if (Array.isArray(oiData) && oiData.length >= 3) {
-                const latestOI = parseFloat(oiData[2].sumOpenInterest);
-                const prevOI = parseFloat(oiData[1].sumOpenInterest);
-                const prevPrevOI = parseFloat(oiData[0].sumOpenInterest);
-                
-                if (prevOI > 0) {
-                    curr_oi_chg = ((latestOI - prevOI) / prevOI) * 100;
-                }
-                if (prevPrevOI > 0) {
-                    prev_oi_chg = ((prevOI - prevPrevOI) / prevPrevOI) * 100;
-                }
-            }
-
             return {
                 symbol,
                 curr_price_chg,
                 prev_price_chg,
                 curr_vol_chg,
-                prev_vol_chg,
-                curr_oi_chg,
-                prev_oi_chg
+                prev_vol_chg
             };
 
         } catch (e) {
@@ -382,7 +373,7 @@
         tableBody.innerHTML = '';
         
         if (scanResults.length === 0) {
-            tableBody.innerHTML = `<tr><td colspan="7" class="empty-state">No matching patterns found.</td></tr>`;
+            tableBody.innerHTML = `<tr><td colspan="5" class="empty-state">No matching trend reversal patterns found.</td></tr>`;
             return;
         }
 
@@ -401,8 +392,6 @@
                 <td>${formatPct(row.prev_price_chg)}</td>
                 <td>${formatPct(row.curr_vol_chg)}</td>
                 <td>${formatPct(row.prev_vol_chg)}</td>
-                <td>${formatPct(row.curr_oi_chg)}</td>
-                <td>${formatPct(row.prev_oi_chg)}</td>
             `;
             tableBody.appendChild(tr);
         });
