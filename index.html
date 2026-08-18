@@ -198,7 +198,7 @@
                     <th class="sortable" onclick="sortTable('prev_price_chg')">Prev Price % <span class="sort-icon" id="icon_prev_price_chg">↕</span></th>
                     <th class="sortable" onclick="sortTable('curr_vol_chg')">Curr Vol % <span class="sort-icon" id="icon_curr_vol_chg">↕</span></th>
                     <th class="sortable" onclick="sortTable('prev_vol_chg')">Prev Vol % <span class="sort-icon" id="icon_prev_vol_chg">↕</span></th>
-                    <th class="sortable" onclick="sortTable('pre_b1_consec_count')">Pre-B1 Consec <span class="sort-icon" id="icon_pre_b1_consec_count">↕</span></th>
+                    <th class="sortable" onclick="sortTable('pre_b1_consec_count')">Prev Trend Consec <span class="sort-icon" id="icon_pre_b1_consec_count">↕</span></th>
                 </tr>
             </thead>
             <tbody id="tableBody">
@@ -230,19 +230,16 @@
         progressBar.style.width = '0%';
         
         try {
-            // 1. Fetch top active USDT Perpetuals ranked by 24h volume
             progressText.innerText = "Fetching active USDT Perpetual pairs from Binance...";
             const tickerRes = await fetch(`${API_BASE}/fapi/v1/ticker/24hr`);
             const tickerData = await tickerRes.json();
             
-            // Filter strictly for USDT Perpetual contracts
             const symbols = tickerData
                 .filter(item => item.symbol.endsWith('USDT') && !item.symbol.includes('_'))
                 .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
                 .slice(0, TOP_N_SYMBOLS)
                 .map(item => item.symbol);
 
-            // 2. Scan in concurrent batches of 10
             let completed = 0;
             
             for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
@@ -260,7 +257,6 @@
                 progressText.innerText = `Scanning: ${completed} / ${symbols.length} (${percentage}%)`;
                 progressBar.style.width = `${percentage}%`;
                 
-                // Buffer to comply with API rate limits
                 await new Promise(resolve => setTimeout(resolve, 80));
             }
             
@@ -277,36 +273,30 @@
 
     async function scanSingleSymbol(symbol) {
         try {
-            // Fetch up to 50 candles to evaluate sequences and count historical streaks
             const res = await fetch(`${API_BASE}/fapi/v1/klines?symbol=${symbol}&interval=${TIMEFRAME}&limit=50`);
             if (!res.ok) return null;
             const klines = await res.json();
             
             if (!Array.isArray(klines) || klines.length < 6) return null;
 
-            // Structure: [OpenTime, Open, High, Low, Close, Volume, ...]
             const len = klines.length;
             
-            // Batch 1 Candles
-            const curr = klines[len - 1];         // Current
-            const prev = klines[len - 2];         // Prev
+            const curr = klines[len - 1];         
+            const prev = klines[len - 2];         
             
-            // Batch 2 Candles
-            const prev2 = klines[len - 3];        // Prev Prev
-            const prev3 = klines[len - 4];        // Prev Prev Prev
-            const prev4 = klines[len - 5];        // Prev Prev Prev Prev
+            const prev2 = klines[len - 3];        
+            const prev3 = klines[len - 4];        
+            const prev4 = klines[len - 5];        
 
-            // Volumes
             const curr_vol = parseFloat(curr[5]);
             const prev_vol = parseFloat(prev[5]);
             const prev2_vol = parseFloat(prev2[5]);
 
-            // --- CONDITION 1: Current candle volume is max of last 3 candles ---
+            // CONDITION 1: Current volume max of last 3 candles
             if (curr_vol <= prev_vol || curr_vol <= prev2_vol) {
                 return null;
             }
 
-            // Colors (true = Green [Close >= Open], false = Red [Close < Open])
             const curr_color = parseFloat(curr[4]) >= parseFloat(curr[1]);
             const prev_color = parseFloat(prev[4]) >= parseFloat(prev[1]);
 
@@ -314,17 +304,17 @@
             const prev3_color = parseFloat(prev3[4]) >= parseFloat(prev3[1]);
             const prev4_color = parseFloat(prev4[4]) >= parseFloat(prev4[1]);
 
-            // --- CONDITION 2: Colour of Batch 1 candles is same ---
+            // CONDITION 2: Batch 1 candles same color
             if (curr_color !== prev_color) {
                 return null;
             }
 
-            // --- CONDITION 3: Colour of Batch 2 candles is same ---
+            // CONDITION 3: Batch 2 candles same color
             if (!(prev2_color === prev3_color && prev3_color === prev4_color)) {
                 return null;
             }
 
-            // --- CONDITION 4: Colour of Batch 1 and Batch 2 candles are different ---
+            // CONDITION 4: Batch 1 and Batch 2 colors differ
             const batch1_color = curr_color;
             const batch2_color = prev2_color;
 
@@ -332,19 +322,19 @@
                 return null;
             }
 
-            // --- CONSECUTIVE BATCH 1 COLOR CANDLES BEFORE BATCH 1 ---
-            // Count how many consecutive candles prior to Batch 1 matched Batch 1's color
+            // --- CORRECTED COUNTER: Count opposite-color candles in preceding trend ---
+            const preceding_trend_color = batch2_color;
             let pre_b1_consec_count = 0;
+            
             for (let i = len - 3; i >= 0; i--) {
                 const candleColor = parseFloat(klines[i][4]) >= parseFloat(klines[i][1]);
-                if (candleColor === batch1_color) {
+                if (candleColor === preceding_trend_color) {
                     pre_b1_consec_count++;
                 } else {
-                    break; // Streak ends
+                    break; 
                 }
             }
 
-            // --- DASHBOARD METRICS ---
             const curr_open = parseFloat(curr[1]), curr_close = parseFloat(curr[4]);
             const prev_open = parseFloat(prev[1]), prev_close = parseFloat(prev[4]);
 
