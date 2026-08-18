@@ -33,7 +33,7 @@
             padding: 24px;
             border-radius: 8px;
             width: 100%;
-            max-width: 1050px;
+            max-width: 1200px;
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
         }
 
@@ -162,6 +162,12 @@
 
         .green { color: var(--green); }
         .red { color: var(--red); }
+        .streak-badge {
+            background: var(--border);
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-weight: 600;
+        }
         .empty-state { text-align: center; color: var(--text-muted); padding: 30px; }
     </style>
 </head>
@@ -192,10 +198,11 @@
                     <th class="sortable" onclick="sortTable('prev_price_chg')">Prev Price % <span class="sort-icon" id="icon_prev_price_chg">↕</span></th>
                     <th class="sortable" onclick="sortTable('curr_vol_chg')">Curr Vol % <span class="sort-icon" id="icon_curr_vol_chg">↕</span></th>
                     <th class="sortable" onclick="sortTable('prev_vol_chg')">Prev Vol % <span class="sort-icon" id="icon_prev_vol_chg">↕</span></th>
+                    <th class="sortable" onclick="sortTable('pre_b1_consec_count')">Pre-B1 Consec <span class="sort-icon" id="icon_pre_b1_consec_count">↕</span></th>
                 </tr>
             </thead>
             <tbody id="tableBody">
-                <tr><td colspan="5" class="empty-state">No scan completed yet.</td></tr>
+                <tr><td colspan="6" class="empty-state">No scan completed yet.</td></tr>
             </tbody>
         </table>
     </div>
@@ -253,7 +260,7 @@
                 progressText.innerText = `Scanning: ${completed} / ${symbols.length} (${percentage}%)`;
                 progressBar.style.width = `${percentage}%`;
                 
-                // Rate-limit safety pause
+                // Buffer to comply with API rate limits
                 await new Promise(resolve => setTimeout(resolve, 80));
             }
             
@@ -270,60 +277,74 @@
 
     async function scanSingleSymbol(symbol) {
         try {
-            // Fetch last 6 candles for color checks and volume comparisons
-            const res = await fetch(`${API_BASE}/fapi/v1/klines?symbol=${symbol}&interval=${TIMEFRAME}&limit=6`);
+            // Fetch up to 50 candles to evaluate sequences and count historical streaks
+            const res = await fetch(`${API_BASE}/fapi/v1/klines?symbol=${symbol}&interval=${TIMEFRAME}&limit=50`);
             if (!res.ok) return null;
             const klines = await res.json();
             
-            if (!Array.isArray(klines) || klines.length < 5) return null;
+            if (!Array.isArray(klines) || klines.length < 6) return null;
 
             // Structure: [OpenTime, Open, High, Low, Close, Volume, ...]
             const len = klines.length;
-            const curr = klines[len - 1];         // Candle 0
-            const prev = klines[len - 2];         // Candle -1
-            const prev_prev = klines[len - 3];    // Candle -2
-            const prev3 = klines[len - 4];        // Candle -3
-            const prev4 = klines[len - 5];        // Candle -4 (used for prev_vol_chg)
+            
+            // Batch 1 Candles
+            const curr = klines[len - 1];         // Current
+            const prev = klines[len - 2];         // Prev
+            
+            // Batch 2 Candles
+            const prev2 = klines[len - 3];        // Prev Prev
+            const prev3 = klines[len - 4];        // Prev Prev Prev
+            const prev4 = klines[len - 5];        // Prev Prev Prev Prev
 
             // Volumes
             const curr_vol = parseFloat(curr[5]);
             const prev_vol = parseFloat(prev[5]);
-            const prev_prev_vol = parseFloat(prev_prev[5]);
-            const prev3_vol = parseFloat(prev3[5]);
-            const prev4_vol = parseFloat(prev4[5]);
+            const prev2_vol = parseFloat(prev2[5]);
 
             // --- CONDITION 1: Current candle volume is max of last 3 candles ---
-            if (curr_vol <= prev_vol || curr_vol <= prev_prev_vol) {
+            if (curr_vol <= prev_vol || curr_vol <= prev2_vol) {
                 return null;
             }
 
             // Colors (true = Green [Close >= Open], false = Red [Close < Open])
             const curr_color = parseFloat(curr[4]) >= parseFloat(curr[1]);
             const prev_color = parseFloat(prev[4]) >= parseFloat(prev[1]);
-            const prev_prev_color = parseFloat(prev_prev[4]) >= parseFloat(prev_prev[1]);
-            const prev3_color = parseFloat(prev3[4]) >= parseFloat(prev3[1]);
 
-            // --- CONDITION 2: Colour of current candle and prev candle is same ---
+            const prev2_color = parseFloat(prev2[4]) >= parseFloat(prev2[1]);
+            const prev3_color = parseFloat(prev3[4]) >= parseFloat(prev3[1]);
+            const prev4_color = parseFloat(prev4[4]) >= parseFloat(prev4[1]);
+
+            // --- CONDITION 2: Colour of Batch 1 candles is same ---
             if (curr_color !== prev_color) {
                 return null;
             }
 
-            // --- CONDITION 3: Colour of prev, prev_prev, and prev3 candles is same ---
-            if (prev_color === prev_prev_color && prev_prev_color === prev3_color) {
-                // If prev, prev_prev, and prev3 are ALL same, then prev and prev_prev are same color, which fails Condition 4.
-                return null;
-            }
-            
-            if (!(prev_prev_color === prev3_color)) {
+            // --- CONDITION 3: Colour of Batch 2 candles is same ---
+            if (!(prev2_color === prev3_color && prev3_color === prev4_color)) {
                 return null;
             }
 
-            // --- CONDITION 4: Colour of prev and prev_prev candles are different ---
-            if (prev_color === prev_prev_color) {
+            // --- CONDITION 4: Colour of Batch 1 and Batch 2 candles are different ---
+            const batch1_color = curr_color;
+            const batch2_color = prev2_color;
+
+            if (batch1_color === batch2_color) {
                 return null;
             }
 
-            // --- DASHBOARD CALCULATIONS ---
+            // --- CONSECUTIVE BATCH 1 COLOR CANDLES BEFORE BATCH 1 ---
+            // Count how many consecutive candles prior to Batch 1 matched Batch 1's color
+            let pre_b1_consec_count = 0;
+            for (let i = len - 3; i >= 0; i--) {
+                const candleColor = parseFloat(klines[i][4]) >= parseFloat(klines[i][1]);
+                if (candleColor === batch1_color) {
+                    pre_b1_consec_count++;
+                } else {
+                    break; // Streak ends
+                }
+            }
+
+            // --- DASHBOARD METRICS ---
             const curr_open = parseFloat(curr[1]), curr_close = parseFloat(curr[4]);
             const prev_open = parseFloat(prev[1]), prev_close = parseFloat(prev[4]);
 
@@ -331,14 +352,15 @@
             const prev_price_chg = ((prev_close - prev_open) / prev_open) * 100;
 
             const curr_vol_chg = prev_vol > 0 ? ((curr_vol - prev_vol) / prev_vol) * 100 : 0;
-            const prev_vol_chg = prev_prev_vol > 0 ? ((prev_vol - prev_prev_vol) / prev_prev_vol) * 100 : 0;
+            const prev_vol_chg = prev2_vol > 0 ? ((prev_vol - prev2_vol) / prev2_vol) * 100 : 0;
 
             return {
                 symbol,
                 curr_price_chg,
                 prev_price_chg,
                 curr_vol_chg,
-                prev_vol_chg
+                prev_vol_chg,
+                pre_b1_consec_count
             };
 
         } catch (e) {
@@ -373,7 +395,7 @@
         tableBody.innerHTML = '';
         
         if (scanResults.length === 0) {
-            tableBody.innerHTML = `<tr><td colspan="5" class="empty-state">No matching trend reversal patterns found.</td></tr>`;
+            tableBody.innerHTML = `<tr><td colspan="6" class="empty-state">No matching trend reversal patterns found.</td></tr>`;
             return;
         }
 
@@ -392,6 +414,7 @@
                 <td>${formatPct(row.prev_price_chg)}</td>
                 <td>${formatPct(row.curr_vol_chg)}</td>
                 <td>${formatPct(row.prev_vol_chg)}</td>
+                <td><span class="streak-badge">${row.pre_b1_consec_count}</span></td>
             `;
             tableBody.appendChild(tr);
         });
