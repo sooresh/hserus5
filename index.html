@@ -33,7 +33,7 @@
             padding: 24px;
             border-radius: 8px;
             width: 100%;
-            max-width: 1200px;
+            max-width: 1150px;
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
         }
 
@@ -159,16 +159,14 @@
             <thead>
                 <tr>
                     <th>Symbol</th>
-                    <th class="sortable" onclick="sortTable('curr_price_chg')">Curr Price % <span class="sort-icon" id="icon_curr_price_chg">↕</span></th>
-                    <th class="sortable" onclick="sortTable('prev_price_chg')">Prev Price % <span class="sort-icon" id="icon_prev_price_chg">↕</span></th>
-                    <th class="sortable" onclick="sortTable('prev2_price_chg')">Prev2 Price % <span class="sort-icon" id="icon_prev2_price_chg">↕</span></th>
-                    <th class="sortable" onclick="sortTable('curr_vol_chg')">Curr Vol % <span class="sort-icon" id="icon_curr_vol_chg">↕</span></th>
-                    <th class="sortable" onclick="sortTable('prev_vol_chg')">Prev Vol % <span class="sort-icon" id="icon_prev_vol_chg">↕</span></th>
-                    <th class="sortable" onclick="sortTable('prev2_vol_chg')">Prev2 Vol % <span class="sort-icon" id="icon_prev2_vol_chg">↕</span></th>
+                    <th class="sortable" onclick="sortTable('curr_price_chg')">Price % <span class="sort-icon" id="icon_curr_price_chg">↕</span></th>
+                    <th class="sortable" onclick="sortTable('curr_vol_chg')">Vol % <span class="sort-icon" id="icon_curr_vol_chg">↕</span></th>
+                    <th class="sortable" onclick="sortTable('bb_width_pct')">BB Width % <span class="sort-icon" id="icon_bb_width_pct">↕</span></th>
+                    <th class="sortable" onclick="sortTable('sma_chg_pct')">SMA Chg % <span class="sort-icon" id="icon_sma_chg_pct">↕</span></th>
                 </tr>
             </thead>
             <tbody id="tableBody">
-                <tr><td colspan="7" class="empty-state">No scan completed yet.</td></tr>
+                <tr><td colspan="5" class="empty-state">No scan completed yet.</td></tr>
             </tbody>
         </table>
     </div>
@@ -180,7 +178,7 @@
     const BATCH_SIZE = 10;
 
     let scanResults = [];
-    let currentSortColumn = 'curr_vol_chg';
+    let currentSortColumn = 'bb_width_pct';
     let isSortDescending = true;
 
     const startBtn = document.getElementById('startBtn');
@@ -206,7 +204,7 @@
                 .slice(0, TOP_N_SYMBOLS)
                 .map(item => item.symbol);
 
-            // 2. Batch processing (10 symbols per batch)
+            // 2. Process in batches of 10 symbols
             let completed = 0;
             
             for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
@@ -242,77 +240,85 @@
 
     async function scanSingleSymbol(symbol) {
         try {
-            // Fetch 4 candles of 1h timeframe
-            const res = await fetch(`${API_BASE}/fapi/v1/klines?symbol=${symbol}&interval=1h&limit=4`);
+            // Fetch 30 1h candles (20 for initial SMA + 6 for direction check + buffer)
+            const res = await fetch(`${API_BASE}/fapi/v1/klines?symbol=${symbol}&interval=1h&limit=30`);
             if (!res.ok) return null;
 
             const klines = await res.json();
-            if (!Array.isArray(klines) || klines.length < 4) return null;
+            if (!Array.isArray(klines) || klines.length < 27) return null;
 
-            // Extract Candle Data
-            const c0 = klines[3]; // Current candle
-            const c1 = klines[2]; // Prev candle
-            const c2 = klines[1]; // Prev Prev candle
-            const c3 = klines[0]; // Prev Prev Prev candle
+            const closes = klines.map(k => parseFloat(k[4]));
+            const len = klines.length;
 
-            // Volumes
-            const v0 = parseFloat(c0[5]);
-            const v1 = parseFloat(c1[5]);
-            const v2 = parseFloat(c2[5]);
-            const v3 = parseFloat(c3[5]);
+            // Compute 20 SMA values for past candles leading up to previous candle (indices len-7 to len-2)
+            // Array of SMAs: smaSeries[0] is at len-7, smaSeries[5] is at len-2 (prev candle)
+            const smaSeries = [];
+            for (let i = len - 7; i <= len - 2; i++) {
+                const window = closes.slice(i - 19, i + 1);
+                const sum = window.reduce((a, b) => a + b, 0);
+                smaSeries.push(sum / 20);
+            }
 
-            // Prices
-            const o0 = parseFloat(c0[1]), cl0 = parseFloat(c0[4]);
-            const o1 = parseFloat(c1[1]), cl1 = parseFloat(c1[4]);
-            const o2 = parseFloat(c2[1]), cl2 = parseFloat(c2[4]);
+            // --- CONDITION 1: Constant 20 SMA slope over last 6 candles (excluding current) ---
+            let isUpward = true;
+            let isDownward = true;
 
-            // Price Changes (%)
-            const curr_price_chg = ((cl0 - o0) / o0) * 100;
-            const prev_price_chg = ((cl1 - o1) / o1) * 100;
-            const prev2_price_chg = ((cl2 - o2) / o2) * 100;
+            for (let i = 1; i < smaSeries.length; i++) {
+                if (smaSeries[i] <= smaSeries[i - 1]) isUpward = false;
+                if (smaSeries[i] >= smaSeries[i - 1]) isDownward = false;
+            }
 
-            // Volume Changes (%)
-            const curr_vol_chg = v1 > 0 ? ((v0 - v1) / v1) * 100 : 0;
-            const prev_vol_chg = v2 > 0 ? ((v1 - v2) / v2) * 100 : 0;
-            const prev2_vol_chg = v3 > 0 ? ((v2 - v3) / v3) * 100 : 0;
+            if (!isUpward && !isDownward) return null; // Direction was broken or flat
 
-            // --- SEQUENTIAL CONDITIONS ---
-            // Condition 1: Current candle volume > Previous candle volume
-            const cond1 = v0 > (0.75 * v1);
+            // Calculate current candle 20 SMA and Standard Deviation for Bollinger Bands
+            const currentWindow = closes.slice(len - 20, len);
+            const currentSMA = currentWindow.reduce((a, b) => a + b, 0) / 20;
+            
+            const variance = currentWindow.reduce((sum, val) => sum + Math.pow(val - currentSMA, 2), 0) / 20;
+            const stdDev = Math.sqrt(variance);
 
-            // Condition 2: Previous candle volume > Prev Prev candle volume
-            const cond2 = v1 > v2;
+            const upperBB = currentSMA + (2 * stdDev);
+            const lowerBB = currentSMA - (2 * stdDev);
 
-            // Condition 3: Prev Prev candle volume > 0.9 * Prev Prev Prev candle volume
-            const cond3 = v2 > (0.9 * v3);
+            const currCandle = klines[len - 1];
+            const currHigh = parseFloat(currCandle[2]);
+            const currLow = parseFloat(currCandle[3]);
 
-            // Condition 4: Colour of last 3 candles alternating (adjacent candles different color)
-            // Color logic: true = Green (Close >= Open), false = Red (Close < Open)
-            const color0 = cl0 >= o0;
-            const color1 = cl1 >= o1;
-            const color2 = cl2 >= o2;
+            // --- CONDITION 2: Price proximity relative to Bollinger Bands ---
+            let cond2Passed = false;
 
-            const cond4 = (color0 !== color1) && (color1 !== color2);
+            if (isUpward) {
+                // Low must be touching or at most 0.5% far from Lower BB (Low <= Lower BB * 1.005)
+                cond2Passed = currLow <= (lowerBB * 1.005);
+            } else if (isDownward) {
+                // High/Price must be touching upper BB or within 0.5% of Upper BB (High >= Upper BB * 0.995)
+                cond2Passed = currHigh >= (upperBB * 0.995);
+            }
 
-            // Condition 5: Absolute value of max price change among last 3 candles > 1%
-            const maxAbsPriceChg = Math.max(
-                Math.abs(curr_price_chg),
-                Math.abs(prev_price_chg),
-                Math.abs(prev2_price_chg)
-            );
-            const cond5 = maxAbsPriceChg > 1.0;
+            if (!cond2Passed) return null;
 
-            const isMatch = cond1 && cond2 && cond3 && cond4 && cond5;
+            // --- DASHBOARD METRICS ---
+            const currOpen = parseFloat(currCandle[1]);
+            const currClose = parseFloat(currCandle[4]);
+            const currVol = parseFloat(currCandle[5]);
+            const prevVol = parseFloat(klines[len - 2][5]);
+
+            const curr_price_chg = ((currClose - currOpen) / currOpen) * 100;
+            const curr_vol_chg = prevVol > 0 ? ((currVol - prevVol) / prevVol) * 100 : 0;
+            const bb_width_pct = ((upperBB - lowerBB) / currentSMA) * 100;
+
+            // Previous candle 20 SMA % change: (SMA[-1] - SMA[-2]) / SMA[-2] * 100
+            const prevSMA = smaSeries[smaSeries.length - 1];
+            const prevPrevSMA = smaSeries[smaSeries.length - 2];
+            const sma_chg_pct = ((prevSMA - prevPrevSMA) / prevPrevSMA) * 100;
 
             return {
                 symbol,
                 curr_price_chg,
-                prev_price_chg,
-                prev2_price_chg,
                 curr_vol_chg,
-                prev_vol_chg,
-                prev2_vol_chg,
-                isMatch
+                bb_width_pct,
+                sma_chg_pct,
+                isMatch: true
             };
 
         } catch (e) {
@@ -347,7 +353,7 @@
         tableBody.innerHTML = '';
         
         if (scanResults.length === 0) {
-            tableBody.innerHTML = `<tr><td colspan="7" class="empty-state">No matching setups found.</td></tr>`;
+            tableBody.innerHTML = `<tr><td colspan="5" class="empty-state">No matching setups found.</td></tr>`;
             return;
         }
 
@@ -360,14 +366,16 @@
                 return `<span class="${colorClass}">${sign}${val.toFixed(2)}%</span>`;
             };
 
+            const formatVal = (val) => {
+                return `<span>${val.toFixed(2)}%</span>`;
+            };
+
             tr.innerHTML = `
                 <td><strong>${row.symbol}</strong></td>
                 <td>${formatPct(row.curr_price_chg)}</td>
-                <td>${formatPct(row.prev_price_chg)}</td>
-                <td>${formatPct(row.prev2_price_chg)}</td>
                 <td>${formatPct(row.curr_vol_chg)}</td>
-                <td>${formatPct(row.prev_vol_chg)}</td>
-                <td>${formatPct(row.prev2_vol_chg)}</td>
+                <td>${formatVal(row.bb_width_pct)}</td>
+                <td>${formatPct(row.sma_chg_pct)}</td>
             `;
             tableBody.appendChild(tr);
         });
